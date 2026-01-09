@@ -1179,7 +1179,6 @@ dig example.com +norecurse
 # Test TCP-based DNS (large responses)
 dig +tcp example.com
 ```
-```
 ---
 
 ## Common DNS Failure Scenarios
@@ -1346,7 +1345,7 @@ Most production firewalls rely on:
 ```bash
 -m conntrack --ctstate ESTABLISHED,RELATED
 ```
-```
+
 
 Without this, replies to outbound traffic may be dropped.
 
@@ -4910,7 +4909,7 @@ Example:
 ```bash
 terraform import aws_instance.web i-1234567890abcdef0
 ```
-```
+
 
 
 ---
@@ -4990,7 +4989,6 @@ Prefer separate directories or repositories per environment:
 /env/dev
 /env/staging
 /env/prod
-```
 ```
 
 Workspaces are best suited for **lightweight or non-critical environments**.
@@ -5448,7 +5446,7 @@ Infrastructure managed by Terraform behaves differently from what is defined in 
 terraform plan
 terraform refresh
 ```
-```
+
 
 **Common Causes**
 
@@ -7496,7 +7494,6 @@ response.raise_for_status()
 data = response.json()
 for user in data["users"]:
     print(user["id"], user["email"])
-```
 ```
 
 **Best Practices**
