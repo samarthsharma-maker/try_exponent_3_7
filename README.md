@@ -3446,6 +3446,809 @@ These scenarios mirror **real production AWS incidents**, not exam-style questio
 
 
 
+Topic 3.6:
+Title: Advanced Git Operations
+Order: 6
+
+Class 3.6.1:
+	Title: Git Hooks and Advanced Features
+	Description: Client-side and server-side hooks, detached HEAD, and history management.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Advanced Git: Beyond Branching and Merging
+
+## 1. Git Hooks: Automating Workflows
+
+Git hooks are scripts that run automatically at specific points in the Git lifecycle. They enable:
+- **Linting** before commit (catch style violations early)
+- **Security checks** (prevent secrets in commits)
+- **Tests** (run unit tests before pushing)
+- **CI/CD triggers** (notify servers on push)
+
+### Client-Side Hooks (Run Locally)
+
+#### `pre-commit` - Before Commit is Created
+
+```bash
+# .git/hooks/pre-commit
+#!/bin/bash
+set -euo pipefail
+
+# Lint staged files
+eslint $(git diff --cached --name-only --diff-filter=ACM | grep '.js$') || exit 1
+
+# Check for large files (>10MB)
+git diff --cached --name-only | while read file; do
+  size=$(git ls-files -s "$file" | awk '{print $4}' | xargs git cat-file -s)
+  if [ $size -gt 10485760 ]; then
+    echo "ERROR: File '$file' is too large ($size bytes)"
+    exit 1
+  fi
+done
+
+# Prevent committed secrets
+if git diff --cached | grep -qE 'password|secret|api.?key|aws.?key'; then
+  echo "ERROR: Secrets detected in staged changes"
+  exit 1
+fi
+
+exit 0
+```
+
+**Usage:**
+```bash
+# Git automatically runs the hook
+git commit -m "Fix bug"
+# If hook exits with non-zero, commit is rejected
+```
+
+#### `pre-push` - Before Push to Remote
+
+```bash
+# .git/hooks/pre-push
+#!/bin/bash
+# Prevent force-push to main branch
+
+remote=$1
+url=$2
+
+while read local_ref local_oid remote_ref remote_oid; do
+  if [[ "$remote_ref" == "refs/heads/main" && "$local_oid" != "$remote_oid" ]]; then
+    echo "ERROR: Force-push to main is not allowed"
+    exit 1
+  fi
+done
+
+# Run tests before push
+npm test || exit 1
+
+exit 0
+```
+
+#### `post-merge` - After Merge Completes
+
+```bash
+# .git/hooks/post-merge
+#!/bin/bash
+# Automatically update dependencies if package-lock.json changed
+
+if git diff HEAD@{1} --name-only | grep -q package-lock.json; then
+  echo "Dependencies changed. Running npm install..."
+  npm install
+fi
+
+exit 0
+```
+
+### Server-Side Hooks (Run on Server)
+
+#### `pre-receive` - Before Push is Accepted
+
+```bash
+# /path/to/repo.git/hooks/pre-receive
+#!/bin/bash
+# Enforce commit message format
+
+while read oldrev newrev refname; do
+  # Get commits in this push
+  for commit in $(git rev-list $oldrev..$newrev); do
+    message=$(git log -1 --format=%B $commit)
+    
+    # Enforce conventional commits (feat:, fix:, etc.)
+    if ! echo "$message" | grep -qE '^(feat|fix|docs|style|refactor|test|chore):'; then
+      echo "ERROR: Commit message must start with type (feat:, fix:, etc.)"
+      exit 1
+    fi
+  done
+done
+
+exit 0
+```
+
+#### `post-receive` - After Push is Accepted
+
+```bash
+# /path/to/repo.git/hooks/post-receive
+#!/bin/bash
+# Trigger CI/CD pipeline
+
+while read oldrev newrev refname; do
+  branch=$(basename $refname)
+  
+  # Only trigger on main/production
+  if [[ "$branch" == "main" || "$branch" == "production" ]]; then
+    curl -X POST \
+      -H "Authorization: token $GITHUB_TOKEN" \
+      https://api.github.com/repos/myorg/myrepo/dispatches \
+      -d "{\"event_type\":\"deploy\",\"client_payload\":{\"branch\":\"$branch\"}}"
+  fi
+done
+
+exit 0
+```
+
+### Installing Hooks Safely
+
+```bash
+# Store hooks in repo
+mkdir -p .githooks
+cp pre-commit .githooks/
+chmod +x .githooks/*
+
+# Configure Git to use them
+git config core.hooksPath .githooks
+
+# Other developers pull and hooks are active
+git clone <repo>
+# Hooks are automatically available
+```
+
+---
+
+## 2. Detached HEAD State
+
+### What is HEAD?
+
+`HEAD` is a pointer to the current commit. Normally it points to a branch:
+
+```
+main → commit ABC123
+↑
+HEAD points to main
+```
+
+### Entering Detached HEAD
+
+```bash
+# Check out a specific commit
+git checkout abc123def
+
+# Now HEAD points directly to the commit
+abc123 (HEAD)
+↑
+HEAD points to commit, not a branch
+```
+
+**Symptoms:**
+```
+HEAD detached at abc123def
+```
+
+### Why This Happens (And Why It's Dangerous)
+
+```
+Before: main → ABC123 → (you are here)
+After:  main → ABC123 (still here)
+        ↑
+        New commits here are **orphaned**
+        They will be garbage collected!
+```
+
+```bash
+git checkout abc123def
+# Make new commits
+git commit -m "Fix bug"  # This commit is now orphaned
+
+git checkout main  # Switch away
+# Your fix is lost! (Unless you saved the SHA)
+```
+
+### Recovering from Detached HEAD
+
+```bash
+# You made commits in detached HEAD
+git checkout abc123def
+git commit -m "My fix"
+# Oops, now at defgh789 but HEAD is detached
+
+# Option 1: Create a branch
+git branch my-fix  # Saves the current commit to my-fix branch
+git checkout my-fix
+
+# Option 2: Use reflog
+git reflog  # See all recent commits
+# abc123def HEAD@{0}: commit: My fix
+git checkout -b recovery-branch abc123def
+
+# Option 3: Cherry-pick if you're on main
+git checkout main
+git cherry-pick defgh789  # Applies the commit to main
+```
+
+### Legitimate Uses of Detached HEAD
+
+```bash
+# 1. Inspecting a specific commit
+git checkout v1.0.0
+# Look at the code, run tests
+git checkout main
+
+# 2. Bisecting to find a bug
+git bisect start
+git bisect bad main
+git bisect good v1.0.0
+# Git checks out commits for testing
+# When done: git bisect reset
+
+# 3. Testing a specific state
+git checkout abc123def
+npm test
+git checkout main
+```
+
+---
+
+## 3. Revert vs Reset vs Checkout
+
+These commands all "undo" changes but in different ways.
+
+### Reset - Move the Branch
+
+**Does:** Moves the branch pointer backward
+
+```bash
+# File changed and committed
+echo "bug" > file.txt
+git add file.txt
+git commit -m "Introduce bug"
+# main → ABC123 (bug)
+
+# Reset to before the bug
+git reset --soft HEAD~1
+# main → XYZ789 (before bug)
+# Changes are in staging area
+# Perfect for: "I want to redo this commit"
+
+# Reset hard (DANGEROUS)
+git reset --hard HEAD~1
+# Commits AND files are gone
+# Perfect for: "Delete the last commit completely"
+```
+
+### Revert - Create a New Commit
+
+**Does:** Creates a new commit that **undoes** the changes
+
+```bash
+# File changed and committed
+echo "bug" > file.txt
+git add file.txt
+git commit -m "Introduce bug"
+# main → ABC123 (bug)
+
+# Revert (create new commit that undoes it)
+git revert ABC123
+# main → ABC123 → XYZ789 (undo of bug)
+# History is preserved
+# Perfect for: "The commit is already public, I need a clean history"
+```
+
+### Checkout - Move HEAD
+
+**Does:** Moves HEAD to a different commit/branch
+
+```bash
+# Switch to a branch
+git checkout main
+
+# Go back in history (detached HEAD)
+git checkout abc123def
+
+# Discard changes to a file
+git checkout -- file.txt
+```
+
+### Comparison Table
+
+| Command | Use Case | Safety | History |
+| :--- | :--- | :--- | :--- |
+| **Reset --soft** | Redo last commit | Safe (can recover) | Lost (can recover) |
+| **Reset --mixed** | Unstage changes | Safe | Lost (can recover) |
+| **Reset --hard** | Delete last commit | Dangerous | Lost completely |
+| **Revert** | Undo public commit | Very safe | Preserved (new commit) |
+| **Checkout** | Switch branch/discard | Safe (warns on unsaved) | N/A |
+
+**Rule of Thumb:**
+- If commit is **public** (pushed): Use `git revert`
+- If commit is **local** (not pushed): Use `git reset`
+- If you **messed up**: Use `git reflog` to recover
+
+---
+
+## 4. Advanced Rebase
+
+Rebase rewrites history by replaying commits. Powerful but dangerous.
+
+### Interactive Rebase
+
+```bash
+# Rewrite the last 3 commits
+git rebase -i HEAD~3
+
+# Opens editor with:
+# pick abc123 Commit 1
+# pick def456 Commit 2
+# pick ghi789 Commit 3
+
+# Edit to:
+# pick abc123 Commit 1
+# squash def456 Commit 2    # Combine with previous
+# reword ghi789 Commit 3    # Keep but edit message
+
+# Options:
+# pick    - Keep commit as is
+# reword  - Change commit message
+# edit    - Stop to edit the commit
+# squash  - Combine with previous (keep message)
+# fixup   - Combine with previous (discard message)
+# drop    - Delete commit
+```
+
+### Rebase --onto (Advanced)
+
+Replay commits from one branch onto another.
+
+```
+Before:
+main  → A → B → C
+         ↓
+        feature → D → E
+
+After (rebase --onto main):
+main  → A → B → C
+                ↓
+           feature → D' → E'
+```
+
+```bash
+# Move feature branch to base on latest main
+git rebase --onto main original-base feature
+
+# Or simpler:
+git checkout feature
+git rebase main
+
+# Result: feature branch now has all commits from main + its own
+```
+
+### Rewriting History Safely
+
+```bash
+# BEFORE: Someone pushed a commit with secrets
+# main → A → B (has AWS key) → C → D (others made commits)
+
+# Extract the secret-bearing commit
+git rebase -i HEAD~3
+# edit B
+
+# Remove the secret
+rm secrets.txt
+git add -A
+git commit --amend  # Modify the commit
+
+# Continue rebase
+git rebase --continue
+
+# Force-push (ONLY if no one else is working on this branch)
+git push -f origin main
+```
+
+**Safety Rules:**
+1. **Never rewrite public history** unless coordinated
+2. **Always rebase locally first** and test
+3. **Use `git push --force-with-lease`** instead of `git push -f` (safer)
+4. **Communicate** with team before force-pushing
+
+---
+
+## 5. Git Reflog: The Safety Net
+
+Reflog records **all** changes to HEAD, including resets and rebases.
+
+### What Reflog Shows
+
+```bash
+git reflog
+
+# Output:
+# abc123d HEAD@{0}: rebase: Commit message
+# def456e HEAD@{1}: checkout: moving to feature
+# ghi789f HEAD@{2}: commit: Fix bug
+# jkl012g HEAD@{3}: reset: going back to abc
+# ... (goes back weeks)
+```
+
+### Recovering Lost Commits
+
+```bash
+# You accidentally reset and lost commits
+git reset --hard HEAD~5
+
+# Check reflog
+git reflog
+# abc123 HEAD@{0}: reset: going back
+# def456 HEAD@{1}: commit: My fix
+# ghi789 HEAD@{2}: commit: Another fix
+
+# Recover the commit
+git checkout def456
+# or create a new branch from it
+git branch recovery def456
+
+# Cherry-pick the commits back
+git checkout main
+git cherry-pick def456 ghi789
+```
+
+### Reflog vs Git Log
+
+| Aspect | git log | git reflog |
+| :--- | :--- | :--- |
+| **Shows** | Commits in branches | All HEAD movements |
+| **Recovers** | Reachable commits | Unreachable commits |
+| **Scope** | Per-branch | Local repository only |
+| **Lifespan** | Permanent | 30 days (default) |
+
+---
+
+Class 3.6.2:
+	Title: Git Internals and Advanced Workflows
+	Description: Git objects, references, filter-repo, and dependency management.
+Content Type: text
+Duration: 450 
+Order: 2
+		Text Content :
+ # Git Internals: How Git Actually Works
+
+## 1. Git Objects: The Foundation
+
+Git stores everything as **immutable objects**. There are 4 types.
+
+### Blob (Binary Large Object)
+
+A blob is a **file's contents**, nothing else.
+
+```bash
+# When you stage a file
+echo "hello world" > file.txt
+git add file.txt
+
+# Git creates a blob (SHA-1 hash of content)
+git hash-object file.txt
+# e7cf3ef ... (this is the blob SHA)
+
+# The actual storage
+.git/objects/e7/cf3ef...
+```
+
+**Key Point:** Two files with identical content share the same blob (deduplication).
+
+```bash
+echo "hello world" > file1.txt
+echo "hello world" > file2.txt
+git add file1.txt file2.txt
+
+# Same content = same blob hash
+# Storage is deduplicated
+```
+
+### Tree
+
+A tree is a **directory listing**. It maps filenames to blobs/subtrees.
+
+```
+commit abc123
+│
+└── tree def456
+    ├── src/ → tree ghi789
+    │   └── main.py → blob jkl012
+    ├── README.md → blob mno345
+    └── .gitignore → blob pqr678
+```
+
+```bash
+# View the tree
+git cat-file -p HEAD^{tree}
+
+# Output:
+# 100644 blob jkl012abc  README.md
+# 100644 blob mno345def  .gitignore
+# 040000 tree ghi789jkl  src
+```
+
+### Commit
+
+A commit is a **snapshot**: it points to a tree, author, message, and parent commits.
+
+```
+commit abc123def
+├── tree: def456ghi789  (the state of the repo)
+├── parent: xyz789abc123  (previous commit)
+├── author: Alice <alice@example.com>
+├── date: 2024-01-15 10:00:00
+└── message: Fix bug in parser
+```
+
+```bash
+# View a commit object
+git cat-file -p HEAD
+
+# Output:
+# tree def456ghi789
+# parent xyz789abc123
+# author Alice <alice@example.com> 1705325000 +0000
+# committer Alice <alice@example.com> 1705325000 +0000
+#
+# Fix bug in parser
+```
+
+### Tag
+
+A tag is a **named reference** to a commit (often for releases).
+
+```bash
+# Annotated tag (recommended)
+git tag -a v1.0.0 -m "Release 1.0.0" abc123def
+
+# Lightweight tag
+git tag v1.0.0 abc123def
+
+# View tag
+git cat-file -p v1.0.0
+# object abc123def
+# type commit
+# tagger Alice <alice@example.com> 1705325000
+# tag v1.0.0
+# Release 1.0.0
+```
+
+---
+
+## 2. Git References
+
+References are **pointers** to commits. They enable the human-readable Git.
+
+### Branches as References
+
+```bash
+# A branch is just a file pointing to a commit
+cat .git/refs/heads/main
+# abc123def456...
+
+# When you commit
+git commit -m "Fix"
+# The file gets updated
+cat .git/refs/heads/main
+# def456ghi789...
+```
+
+### HEAD Reference
+
+```
+HEAD → main → abc123def (current commit)
+```
+
+```bash
+# HEAD normally points to a branch
+cat .git/HEAD
+# ref: refs/heads/main
+
+# In detached HEAD state
+cat .git/HEAD
+# abc123def (direct commit reference)
+```
+
+### Remote References
+
+```bash
+# After git fetch
+cat .git/refs/remotes/origin/main
+# xyz789abc123...
+```
+
+**Remote references are read-only.** They represent the last known state of the remote branch.
+
+---
+
+## 3. The .git Directory Structure
+
+```
+.git/
+├── HEAD                      # Points to current branch/commit
+├── config                    # Local config
+├── objects/                  # Blobs, trees, commits, tags
+│   ├── ab/
+│   │   ├── cd1234...
+│   │   └── ef5678...
+│   └── ...
+├── refs/
+│   ├── heads/               # Branches
+│   │   ├── main
+│   │   ├── feature-1
+│   │   └── ...
+│   ├── remotes/            # Remote branches
+│   │   └── origin/
+│   │       ├── main
+│   │       └── ...
+│   └── tags/               # Tags
+│       ├── v1.0.0
+│       └── ...
+├── hooks/                   # Git hooks
+├── logs/                    # Reflog data
+├── index                    # Staging area
+└── description             # Repository description
+```
+
+**Key Files:**
+- **HEAD:** Current commit
+- **config:** Local settings (remote URLs, user)
+- **objects/:** All Git data (immutable)
+- **refs/:** Pointers to commits
+- **index:** Staging area (what `git add` modifies)
+
+---
+
+## 4. Git Filter-Repo: Rewriting History
+
+Filter-repo rewrites Git history—useful for removing secrets or large files.
+
+### Installing
+
+```bash
+pip install git-filter-repo
+```
+
+### Removing Sensitive Data
+
+```bash
+# Someone accidentally committed AWS keys
+git log --all --full-history -- secrets.txt
+# Oops, it's there from commit abc123
+
+# Remove it entirely
+git filter-repo --invert-paths --path secrets.txt
+
+# All commits are rewritten
+# The file is removed from entire history
+# Reflog is cleaned up
+```
+
+### Removing Large Files
+
+```bash
+# Find large files
+git filter-repo --analyze
+
+# Review report (shows files by size)
+cat .git/filter-repo/analysis/*.txt
+
+# Remove files > 10MB
+git filter-repo --strip-blobs-bigger-than 10M
+```
+
+### Replacing Values (Find and Replace)
+
+```bash
+# Replace old domain with new domain in all commits
+git filter-repo --message-callback \
+  'return message.replace(b"old-domain.com", b"new-domain.com")'
+
+# Or in file contents
+git filter-repo --blob-callback \
+  'return blob.replace(b"old-api-key", b"new-api-key")'
+```
+
+### Post-Filter Steps
+
+```bash
+# After filtering, the repo is "dirty"
+# Force-push to remote (DANGEROUS!)
+git push --force-with-lease --all origin
+
+# Other developers must:
+git clone <repo>  # Fresh clone
+# OR (risky)
+git reset --hard @{upstream}
+```
+
+---
+
+## 5. Git Submodules vs Subtrees
+
+Managing dependencies in Git.
+
+### Submodules (Loose Coupling)
+
+A submodule is a **reference to another Git repository**.
+
+```bash
+# Add a dependency
+git submodule add https://github.com/lib/json json/
+
+# Creates .gitmodules
+cat .gitmodules
+# [submodule "json"]
+#   path = json
+#   url = https://github.com/lib/json
+
+# Cloning a repo with submodules
+git clone --recurse-submodules <repo>
+
+# Or fetch separately
+git submodule update --init --recursive
+```
+
+**Pros:**
+- Loose coupling (library has own repo)
+- Easy to update to new version
+- Library team maintains independently
+
+**Cons:**
+- Submodule state must be manually tracked
+- Cloning requires extra steps
+- Merges can be complex
+
+### Subtrees (Tight Coupling)
+
+A subtree **imports another repo's history** into a subdirectory.
+
+```bash
+# Add a dependency
+git subtree add --prefix json \
+  https://github.com/lib/json main --squash
+
+# Result: json/ directory is now part of this repo
+# But history is preserved
+```
+
+**Pros:**
+- Everything is in one repo (easier for developers)
+- No special clone steps
+- Full history available
+
+**Cons:**
+- Tightly coupled (library is "copied" into repo)
+- Updates must be manually pulled
+
+### Comparison
+
+| Aspect | Submodules | Subtrees |
+| :--- | :--- | :--- |
+| **Coupling** | Loose | Tight |
+| **Clone Complexity** | Higher | Same as normal |
+| **Update Workflow** | `git submodule update` | `git subtree pull` |
+| **History** | Separate | Merged |
+| **Use Case** | Shared libraries | Vendored dependencies |
+
+**Best Practice:**
+- Use **submodules** for libraries you don't own
+- Use **subtrees** for vendored code you might modify
+- Use **package managers** (npm, pip) when possible
+
+---
+
 Module 4:
 Title: Container Orchestration with Kubernetes
 Description: Master containerization and Kubernetes from fundamentals to advanced orchestration. Learn Docker internals, Kubernetes architecture, and production-grade deployment patterns.
@@ -4489,7 +5292,990 @@ policyTypes:
 
 These scenarios represent **real on-call Kubernetes incidents**, not certification questions.
 
+---
 
+Topic 4.6:
+Title: Advanced Kubernetes Topics
+Order: 6
+
+Class 4.6.1:
+	Title: Extensibility - CRDs and Operators
+	Description: Custom resources, validation, and operator patterns.
+Content Type: text
+Duration: 550 
+Order: 1
+		Text Content :
+ # Kubernetes Extensibility: Building on the Platform
+
+Kubernetes is not a monolith. It's a **platform** you can extend with Custom Resources and Operators.
+
+---
+
+## 1. Custom Resource Definitions (CRDs)
+
+A CRD lets you define **new resource types** that behave like built-in Kubernetes resources.
+
+### Creating a CRD
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: databases.myapp.io
+spec:
+  group: myapp.io
+  names:
+    kind: Database
+    plural: databases
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              engine:
+                type: string
+                enum: [postgres, mysql, mongodb]
+              version:
+                type: string
+              storageSize:
+                type: string
+                pattern: '^\d+(Gi|Ti|Mi)$'
+              backupEnabled:
+                type: boolean
+              maxConnections:
+                type: integer
+                minimum: 10
+                maximum: 10000
+            required: [engine, version, storageSize]
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: [Pending, Creating, Ready, Failed]
+              endpoint:
+                type: string
+              lastBackup:
+                type: string
+                format: date-time
+```
+
+### Using the CRD
+
+```yaml
+apiVersion: myapp.io/v1
+kind: Database
+metadata:
+  name: prod-db
+  namespace: production
+spec:
+  engine: postgres
+  version: "14.5"
+  storageSize: 100Gi
+  backupEnabled: true
+  maxConnections: 500
+```
+
+### Validating Custom Resources
+
+```bash
+# The CRD enforces validation
+kubectl apply -f database.yaml
+
+# If spec is invalid:
+# error validating "database.yaml": error validating: 
+# storageSize: Invalid value: "100GB": must match pattern
+
+# Validation rules can also prevent:
+- Conflicting configurations
+- Deprecated fields
+- Resource limits
+```
+
+### CRD vs ConfigMap
+
+| Aspect | CRD | ConfigMap |
+| :--- | :--- | :--- |
+| **Type Safety** | Strong (validates schema) | Weak (free-form) |
+| **Kubectl Support** | Full (like native resources) | Limited |
+| **Status Tracking** | Can have status subresource | No |
+| **RBAC** | Fine-grained control | Less granular |
+| **Use Case** | Complex domain objects | Simple configuration |
+
+---
+
+## 2. Kubernetes Operators
+
+An Operator is a **pattern** that uses CRDs + custom controllers to manage complex applications.
+
+### The Operator Pattern
+
+```
+CRD (What you want)
+    ↓
+Controller (Desired state reconciliation)
+    ↓
+Kubernetes Resources (Actual implementation)
+```
+
+### Example: Database Operator
+
+```yaml
+# User declares desired database
+apiVersion: mydb.io/v1
+kind: Database
+metadata:
+  name: mydb
+spec:
+  engine: postgres
+  version: "14.5"
+  replicas: 3
+  storage: 100Gi
+
+# Operator reconciles:
+# 1. Creates StatefulSet with 3 replicas
+# 2. Creates PVC for storage
+# 3. Creates ConfigMap for configuration
+# 4. Creates Secret for credentials
+# 5. Sets up replication between replicas
+# 6. Monitors health
+# 7. Handles upgrades
+```
+
+### Operator SDK
+
+The Operator SDK simplifies building operators.
+
+```bash
+# Install Operator SDK
+brew install operator-sdk
+
+# Create operator project
+operator-sdk init --domain myapp.io --repo github.com/myorg/mydb-operator
+
+# Create API and controller
+operator-sdk create api --group mydb --version v1 --kind Database --resource --controller
+
+# This generates:
+# - CRD definition
+# - Controller reconciliation logic
+# - Example Custom Resource
+```
+
+### Reconciliation Loop (Heart of Operator)
+
+```go
+func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    // Get the Database resource
+    db := &mydbv1.Database{}
+    r.Get(ctx, req.NamespacedName, db)
+
+    // Step 1: Create StatefulSet if it doesn't exist
+    sts := &appsv1.StatefulSet{}
+    if errors.IsNotFound(r.Get(ctx, ..., sts)) {
+        newSts := r.constructStatefulSet(db)
+        r.Create(ctx, newSts)
+    }
+
+    // Step 2: Create PVC for storage
+    pvc := &corev1.PersistentVolumeClaim{}
+    if errors.IsNotFound(r.Get(ctx, ..., pvc)) {
+        newPvc := r.constructPVC(db)
+        r.Create(ctx, newPvc)
+    }
+
+    // Step 3: Update status
+    db.Status.Phase = "Ready"
+    db.Status.Endpoint = "postgres.default.svc"
+    r.Status().Update(ctx, db)
+
+    // Requeue after 5 minutes to check status
+    return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+```
+
+---
+
+## 3. Operator Lifecycle Manager (OLM)
+
+OLM manages operator installation, updates, and dependencies.
+
+### Installing an Operator via OLM
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: operators
+
+---
+
+apiVersion: operators.coreos.com/v1alpha1
+kind: OperatorGroup
+metadata:
+  name: default
+  namespace: operators
+
+---
+
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: postgres-operator
+  namespace: operators
+spec:
+  channel: stable
+  installPlanApproval: Automatic  # Auto-approve updates
+  name: postgres-operator
+  source: operatorhub  # From OperatorHub.io catalog
+  sourceNamespace: olm
+```
+
+**Result:** Operator is installed and automatically updated.
+
+---
+
+## 4. Common Operators
+
+| Operator | Purpose | Example Use |
+| :--- | :--- | :--- |
+| **PostgreSQL Operator** | Database provisioning | `kubectl apply -f postgres.yaml` |
+| **MongoDB Enterprise Operator** | Database provisioning | `kubectl apply -f mongodb.yaml` |
+| **Prometheus Operator** | Monitoring stack | Declarative monitoring |
+| **Cert-Manager** | TLS certificates | Automatic HTTPS |
+| **Nginx Ingress Controller** | Ingress management | Dynamic routing rules |
+
+---
+
+Class 4.6.2:
+	Title: Advanced Networking and Service Mesh
+	Description: CNI plugins, service mesh, and traffic management.
+Content Type: text
+Duration: 500 
+Order: 2
+		Text Content :
+ # Advanced Kubernetes Networking
+
+## 1. CNI (Container Network Interface) Plugins
+
+CNI is the standard for Kubernetes networking. Different plugins offer different capabilities.
+
+### Flannel (Simple)
+
+```bash
+# Install Flannel
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+```
+
+**Characteristics:**
+- Simple, lightweight
+- Flat network (all pods can reach each other)
+- No advanced policies
+- Good for small clusters
+
+**Architecture:**
+```
+┌──────────┐    ┌──────────┐
+│ Pod A    │    │ Pod B    │
+│ 10.1.1.2 │    │ 10.1.2.3 │
+└────┬─────┘    └────┬─────┘
+     │               │
+     └───────┬───────┘
+             │
+          VXLAN tunnel
+          (Flannel backend)
+             │
+     ┌───────┴───────┐
+     │   Etcd        │
+     │  (Mapping)    │
+     └───────────────┘
+```
+
+### Calico (Production)
+
+```bash
+# Install Calico
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/master/manifests/tigera-operator.yaml
+```
+
+**Characteristics:**
+- **BGP-based** routing (scalable)
+- Network policies (security)
+- High performance
+- Enterprise-grade
+
+**Features:**
+```yaml
+# NetworkPolicy enforcement
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+```
+
+### Cilium (Advanced)
+
+```bash
+# Install Cilium
+helm repo add cilium https://helm.cilium.io
+helm install cilium cilium/cilium --namespace kube-system
+```
+
+**Characteristics:**
+- **eBPF-based** (kernel level, very fast)
+- Fine-grained security policies
+- Service mesh integration
+- Observable
+
+**Advantages:**
+- Lower latency than iptables-based plugins
+- Real-time visibility
+- Cluster mesh (multi-cluster)
+
+### CNI Comparison
+
+| Aspect | Flannel | Calico | Cilium |
+| :--- | :--- | :--- | :--- |
+| **Routing** | VXLAN | BGP | eBPF |
+| **Performance** | Good | Excellent | Excellent+ |
+| **Policies** | No | Yes | Yes (advanced) |
+| **Complexity** | Low | Medium | High |
+| **Scale** | ~100 nodes | 1000+ nodes | 1000+ nodes |
+| **Multi-cluster** | No | Yes | Yes (mesh) |
+
+---
+
+## 2. Service Mesh: Istio
+
+A service mesh manages service-to-service communication.
+
+### Why Service Mesh?
+
+**Without Service Mesh:**
+```
+App A → App B (network reliability is app's problem)
+      ↓
+   App must handle:
+   - Retries
+   - Timeouts
+   - Circuit breaker
+   - Load balancing
+   - Observability
+```
+
+**With Service Mesh:**
+```
+App A → Envoy (sidecar) → Envoy (sidecar) → App B
+                 ↓              ↓
+        All resilience handled by mesh!
+```
+
+### Installing Istio
+
+```bash
+# Download and install
+curl -L https://istio.io/downloadIstio | sh
+cd istio-*
+export PATH=$PWD/bin:$PATH
+
+# Install control plane
+istioctl install --set profile=demo
+
+# Enable sidecar injection (automatic)
+kubectl label namespace default istio-injection=enabled
+```
+
+### Istio Resources
+
+#### VirtualService (Traffic Management)
+
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: booking-vs
+spec:
+  hosts:
+  - booking  # Service DNS name
+  http:
+  # Canary deployment: 10% to v2, 90% to v1
+  - match:
+    - uri:
+        prefix: /api/v2
+    route:
+    - destination:
+        host: booking
+        subset: v2
+  - route:
+    - destination:
+        host: booking
+        subset: v1
+      weight: 90
+    - destination:
+        host: booking
+        subset: v2
+      weight: 10
+```
+
+#### DestinationRule (Load Balancing)
+
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: booking-dr
+spec:
+  host: booking
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+```
+
+#### SecurityPolicy (mTLS)
+
+```yaml
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+spec:
+  mtls:
+    mode: STRICT  # Require mTLS for all traffic
+```
+
+---
+
+## 3. Observability in Service Mesh
+
+Istio automatically integrates with observability tools.
+
+```bash
+# Enable metrics collection
+kubectl apply -f - <<EOF
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: all-metrics
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+    dimensions:
+    - request_path
+    - response_code
+    - source_principal
+EOF
+```
+
+**Metrics Available:**
+- Request rate, latency, errors
+- Service dependencies
+- mTLS certificate expiration
+- Sidecar resource usage
+
+---
+
+Class 4.6.3:
+	Title: Cluster Operations and Scaling
+	Description: Upgrades, multi-cluster, autoscaling, and scheduling.
+Content Type: text
+Duration: 550 
+Order: 3
+		Text Content :
+ # Cluster Operations at Scale
+
+## 1. Kubernetes Cluster Upgrades
+
+Upgrading a Kubernetes cluster requires careful planning.
+
+### Version Skew Policy
+
+Kubernetes has strict version compatibility rules:
+
+- **Kubelet** can be 2 versions behind API server
+- **API Server** components must be within 1 version
+- **etcd** must be within 1 version
+
+```
+Supported version combinations:
+API Server: 1.25
+kubelet:    1.25, 1.24, 1.23 (up to 2 versions behind)
+kube-proxy: 1.25, 1.24
+etcd:       3.5, 3.4
+```
+
+### Upgrade Strategy: Blue-Green
+
+```
+┌──────────────────────────────────────┐
+│ Old Cluster (Blue) - v1.24           │
+│ ✓ Running production traffic         │
+└──────────────────────────────────────┘
+
+            ↓ (Setup new)
+
+┌──────────────────────────────────────┐
+│ New Cluster (Green) - v1.25          │
+│ ✓ Ready, waiting                     │
+└──────────────────────────────────────┘
+
+            ↓ (Migrate DNS)
+
+┌──────────────────────────────────────┐
+│ Old Cluster (Blue) - v1.24           │
+│ Decommissioned                       │
+└──────────────────────────────────────┘
+
+┌──────────────────────────────────────┐
+│ New Cluster (Green) - v1.25          │
+│ ✓ Running production traffic         │
+└──────────────────────────────────────┘
+```
+
+**Pros:** Instant rollback, zero downtime
+**Cons:** Double infrastructure cost, data migration complexity
+
+### Upgrade Strategy: Rolling (In-Place)
+
+```bash
+# 1. Cordon the node (no new pods)
+kubectl cordon node-1
+
+# 2. Drain existing pods (graceful shutdown)
+kubectl drain node-1 --ignore-daemonsets
+
+# 3. Upgrade kubelet
+ssh node-1
+apt-get upgrade kubeadm kubelet
+systemctl restart kubelet
+
+# 4. Uncordon
+kubectl uncordon node-1
+
+# Repeat for each node
+```
+
+**Pros:** Single cluster, minimal cost
+**Cons:** Risk of compatibility issues, longer upgrade window
+
+### Pre-Upgrade Checklist
+
+```bash
+# 1. Backup etcd
+kubectl get --raw=/api/v1/nodes > nodes-backup.json
+
+# 2. Check node readiness
+kubectl get nodes
+
+# 3. Check pod disruption budgets
+kubectl get pdb -A
+
+# 4. Verify storage
+kubectl get pvc -A
+
+# 5. Test on staging first!
+```
+
+---
+
+## 2. Multi-Cluster Management
+
+Managing multiple Kubernetes clusters brings new challenges.
+
+### Federation (Kubernetes Federation v2 - KubeFed)
+
+```yaml
+apiVersion: core.kubefed.io/v1beta1
+kind: KubeFederatedCluster
+metadata:
+  name: cluster-us-east
+spec:
+  clusterRef:
+    name: us-east-1
+  secretRef:
+    name: us-east-1-secret
+---
+apiVersion: multiclusterdns.kubefed.io/v1alpha1
+kind: IngressDNSRecord
+metadata:
+  name: global-app
+spec:
+  hosts:
+  - global-app.example.com
+  recordTTL: 60
+```
+
+**Result:** Traffic automatically routed to healthy clusters.
+
+### GitOps Across Clusters
+
+```bash
+# Use ArgoCD with multiple clusters
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-us-east
+  namespace: argocd
+type: Opaque
+data:
+  name: dXMtZWFzdC0x  # us-east-1
+  server: aHR0cHM6...  # https://api.us-east-1...
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-multi-cluster
+spec:
+  project: default
+  destination:
+    server: "{{ .server }}"  # Dynamically set per cluster
+  source:
+    repoURL: https://github.com/myorg/app
+    path: manifests
+```
+
+---
+
+## 3. Cluster Autoscaler Deep-Dive
+
+Cluster Autoscaler automatically adds/removes nodes based on demand.
+
+### How It Works
+
+```
+Pending Pod
+    ↓
+Scheduler can't find node
+    ↓
+Pod stays Pending
+    ↓
+Cluster Autoscaler detects
+    ↓
+Adds node from node group
+    ↓
+Pod is scheduled
+    ↓
+Node healthy, ready for more pods
+```
+
+### Configuration
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-autoscaler-status
+  namespace: kube-system
+data:
+  # Scale up 10% if utilization > 80%
+  scale-down-delay-after-add: 10m
+  scale-down-unneeded-time: 5m
+  # Don't remove node if utilization > 65%
+  scale-down-utilization-threshold: 0.65
+```
+
+### Node Groups
+
+```bash
+# AWS ASG example
+# Create node group with specific instance type
+aws autoscaling create-auto-scaling-group \
+  --auto-scaling-group-name k8s-nodes \
+  --min-size 1 \
+  --max-size 10 \
+  --desired-capacity 3 \
+  --launch-template LaunchTemplateName=k8s-node
+```
+
+### Scale-Down Policies
+
+```yaml
+# Don't scale down a node if:
+# 1. Pod has local storage
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-with-local-storage
+spec:
+  containers:
+  - name: app
+    volumeMounts:
+    - name: cache
+      mountPath: /cache
+  volumes:
+  - name: cache
+    emptyDir: {}
+
+# 2. Pod prevents disruption
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: critical-app
+```
+
+---
+
+## 4. Container Storage Interface (CSI)
+
+CSI standardizes how Kubernetes integrates with storage providers.
+
+### CSI Drivers
+
+```bash
+# Install EBS CSI Driver (AWS)
+helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+helm install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+  --namespace kube-system
+```
+
+### Dynamic Provisioning
+
+```yaml
+# StorageClass (template for volumes)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-fast
+provisioner: ebs.csi.aws.com  # CSI driver
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"  # MB/s
+  encrypted: "true"
+allowVolumeExpansion: true
+
+---
+
+# PVC (request storage)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: ebs-fast
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+
+# Pod (use the storage)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: app-data
+```
+
+### Volume Snapshots
+
+```yaml
+# Create snapshot
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: app-data-snapshot
+spec:
+  volumeSnapshotClassName: ebs-snapshot
+  source:
+    persistentVolumeClaimName: app-data
+
+---
+
+# Restore from snapshot
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-restored
+spec:
+  dataSource:
+    name: app-data-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  resources:
+    requests:
+      storage: 100Gi
+```
+
+---
+
+## 5. Kubernetes Scheduler Deep-Dive
+
+The scheduler places pods on nodes based on constraints and preferences.
+
+### Scheduling Queue
+
+```
+Unscheduled Pod
+    ↓
+Active Queue
+    ↓
+Filtering (remove unsuitable nodes)
+    ↓
+Scoring (rank remaining nodes)
+    ↓
+Binding (assign pod to best node)
+```
+
+### Filtering (Yes/No Decisions)
+
+```
+Node Requirements:
+✓ Enough CPU/memory
+✓ Tolerates taints
+✓ Node selector matches
+✓ Pod affinity satisfied
+✓ Storage available
+```
+
+### Scoring (Ranking)
+
+```
+Pod affinity (prefer same zone as other pods): +50 points
+Least packed (spread pods across nodes): +40 points
+Node affinity (prefer specific node): +30 points
+... (other factors)
+Winner: node with highest score
+```
+
+### Custom Scheduler
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  schedulerName: my-custom-scheduler  # Use custom scheduler
+  containers:
+  - name: app
+    image: myapp:latest
+```
+
+### Pod Priority and Preemption
+
+```yaml
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000  # Higher number = higher priority
+globalDefault: false
+description: "Critical workloads"
+
+---
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: critical-pod
+spec:
+  priorityClassName: high-priority
+  containers:
+  - name: app
+    image: critical-app:latest
+```
+
+**When cluster is full:**
+- Low-priority pods are evicted
+- High-priority pod is scheduled
+
+---
+
+## 6. Leader Election
+
+Used in controllers to ensure only one is active.
+
+### ConfigMap-Based (Simple but Slow)
+
+```go
+import "k8s.io/client-go/tools/leaderelection"
+
+lock := &corev1.ConfigMap{
+    ObjectMeta: metav1.ObjectMeta{
+        Name:      "controller-leader",
+        Namespace: "default",
+    },
+}
+
+leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+    Lock:            lock,
+    LeaseDuration:   15 * time.Second,
+    RenewDeadline:   10 * time.Second,
+    RetryPeriod:     2 * time.Second,
+    Callbacks: leaderelection.LeaderCallbacks{
+        OnStartedLeading: func(ctx context.Context) {
+            log.Info("Starting leadership")
+            r.Reconcile(ctx)
+        },
+        OnStoppedLeading: func() {
+            log.Info("Lost leadership")
+        },
+    },
+})
+```
+
+### Lease-Based (Modern, Recommended)
+
+```yaml
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: my-controller-lease
+  namespace: default
+spec:
+  leaseDurationSeconds: 15
+  acquireTime: "2024-01-15T10:00:00Z"
+  renewTime: "2024-01-15T10:00:05Z"
+```
+
+---
 
 ---
 
@@ -5671,6 +7457,637 @@ ansible-playbook -i aws_ec2.yaml deploy.yml
 These scenarios reflect **real Terraform outages and Ansible misconfigurations**, not theory.
 
 
+Topic 6.4:
+Title: Advanced Terraform Techniques
+Order: 4
+
+Class 6.4.1:
+	Title: State Management and Organization
+	Description: Workspaces, drift detection, import, and monorepo patterns.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Advanced Terraform: State and Organization
+
+## 1. Terraform Workspaces
+
+Workspaces allow multiple **separate state files** within one directory.
+
+### When to Use Workspaces
+
+**Scenario:** Deploy same infrastructure across dev, staging, prod.
+
+```bash
+# Create workspaces
+terraform workspace new dev
+terraform workspace new staging
+terraform workspace new prod
+
+# Switch workspace
+terraform workspace select prod
+
+# Apply (uses prod.tfstate)
+terraform apply
+
+# View all workspaces
+terraform workspace list
+# * default
+#   dev
+#   staging
+#   prod
+```
+
+### The tfvars Pattern (Better Than Workspaces)
+
+```hcl
+# prod.tfvars
+environment = "production"
+instance_count = 10
+instance_type = "t3.large"
+enable_detailed_monitoring = true
+
+# dev.tfvars
+environment = "development"
+instance_count = 1
+instance_type = "t3.micro"
+enable_detailed_monitoring = false
+```
+
+```bash
+# Deploy with different variables
+terraform apply -var-file=prod.tfvars
+terraform apply -var-file=dev.tfvars
+```
+
+**Why tfvars is better:**
+- Variables are visible (not hidden in separate state)
+- Easier to version control
+- Clearer inheritance hierarchy
+
+### Workspace Limitations
+
+```bash
+# Workspaces are NOT isolated!
+# All workspaces share:
+# - .tf files
+# - Remote state bucket
+# - Team permissions
+
+# If someone has access to one workspace, they see all
+```
+
+**Recommendation:** Use workspaces for dev environments, **separate directories** or **separate repos** for prod.
+
+---
+
+## 2. State Drift Detection
+
+State drift = actual infrastructure differs from Terraform state.
+
+### Detecting Drift
+
+```bash
+# terraform plan -refresh-only shows drift without applying
+terraform plan -refresh-only -json | jq '.resource_changes[] | select(.change.before != .change.after)'
+
+# Example drift:
+# Security group rule was manually added
+# S3 bucket was manually deleted
+# RDS password was rotated outside Terraform
+```
+
+### Common Causes
+
+1. **Manual changes** via AWS console
+2. **External tools** (CloudFormation, Ansible, scripts)
+3. **Third-party services** (e.g., Datadog agent installing itself)
+4. **Expired credentials** (state is stale)
+
+### Remediation
+
+```bash
+# Option 1: Accept drift (update state)
+terraform refresh
+
+# Option 2: Revert to state (danger!)
+terraform apply  # Overwrites actual infra
+
+# Option 3: Investigate then decide
+terraform state show aws_security_group.main
+# Then manually fix in console OR in Terraform
+```
+
+### Drift Monitoring (Automated)
+
+```bash
+# Daily drift check (CI/CD)
+#!/bin/bash
+terraform init
+terraform plan -refresh-only -json > drift.json
+
+if jq '.resource_changes | length > 0' drift.json; then
+  echo "DRIFT DETECTED"
+  curl -X POST https://hooks.slack.com/services/... \
+    -d @drift.json
+  exit 1
+fi
+```
+
+---
+
+## 3. terraform import
+
+Importing existing resources into Terraform state.
+
+### Scenario: Existing RDS Cluster
+
+Someone created RDS in console, now need to manage it with Terraform.
+
+```bash
+# 1. Write the resource block (empty)
+cat > main.tf << 'EOF'
+resource "aws_db_instance" "prod_database" {
+  # To be filled by import
+}
+EOF
+
+# 2. Import the actual resource
+terraform import aws_db_instance.prod_database mydb-prod-01
+
+# 3. terraform inspect the imported resource
+terraform state show aws_db_instance.prod_database
+
+# 4. Fill in the configuration based on state
+resource "aws_db_instance" "prod_database" {
+  identifier           = "mydb-prod-01"
+  engine               = "mysql"
+  engine_version       = "8.0.28"
+  instance_class       = "db.t3.micro"
+  allocated_storage    = 20
+  storage_encrypted    = true
+  skip_final_snapshot  = false
+  db_subnet_group_name = aws_db_subnet_group.main.name
+  
+  # ... etc
+}
+```
+
+### Challenges
+
+- **Finding the resource ID** (varies by resource type)
+- **Incomplete configuration** (import doesn't create config, only state)
+- **Secrets not imported** (password, API keys must be added manually)
+
+### Best Practice
+
+```bash
+# Don't import production resources into your main code
+# Instead:
+
+# 1. Create separate module for imported resources
+terraform {
+  required_version = ">= 1.0"
+}
+
+module "legacy_infra" {
+  source = "./modules/legacy"
+  # Configuration
+}
+
+# 2. Once stable, migrate to main code
+# 3. Version and test thoroughly before merging
+```
+
+---
+
+## 4. Remote State and Data Sources
+
+### Remote State Data Source (Cross-Stack References)
+
+```hcl
+# Stack 1: VPC (state stored in terraform-vpc-prod.tfstate)
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+
+output "vpc_id" {
+  value = aws_vpc.main.id
+}
+
+# Stack 2: App (needs VPC ID from Stack 1)
+data "terraform_remote_state" "vpc" {
+  backend = "s3"
+  config = {
+    bucket = "terraform-state-prod"
+    key    = "vpc/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+resource "aws_instance" "app" {
+  ami           = "ami-12345"
+  instance_type = "t3.micro"
+  subnet_id     = data.terraform_remote_state.vpc.outputs.vpc_id
+}
+```
+
+### Output Dependencies
+
+```hcl
+# Stack 1 publishes outputs
+output "database_endpoint" {
+  value = aws_db_instance.main.endpoint
+}
+
+output "database_port" {
+  value = aws_db_instance.main.port
+}
+
+# Stack 2 consumes outputs
+locals {
+  db_host = data.terraform_remote_state.db.outputs.database_endpoint
+  db_port = data.terraform_remote_state.db.outputs.database_port
+}
+
+# In app code
+resource "aws_ssm_parameter" "db_connection_string" {
+  name  = "/app/database/connection"
+  value = "postgresql://${local.db_host}:${local.db_port}/mydb"
+}
+```
+
+---
+
+## 5. Monorepo vs Multirepo
+
+### Monorepo Pattern
+
+```
+terraform/
+├── environments/
+│   ├── dev/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── terraform.tfvars
+│   ├── staging/
+│   └── prod/
+├── modules/
+│   ├── vpc/
+│   ├── rds/
+│   └── eks/
+└── shared/
+    ├── variables.tf
+    └── providers.tf
+```
+
+**Pros:**
+- Single repository to clone
+- Easy code reuse (shared modules)
+- Consistent versioning
+
+**Cons:**
+- Large monorepo (slow operations)
+- Accidental changes to prod from dev PR
+- Need strict code review process
+
+---
+
+### Multirepo Pattern
+
+```
+terraform-vpc/          (separate repo)
+terraform-rds/          (separate repo)
+terraform-app/          (separate repo, uses vpc/rds outputs)
+```
+
+**Pros:**
+- Smaller, faster repos
+- Independent versioning
+- Clear separation of concerns
+- Easier to grant access (different teams)
+
+**Cons:**
+- Multiple repos to maintain
+- Dependency management complex
+- Less code reuse
+
+**Recommendation:**
+- **Small teams (<10 people):** Monorepo with modules
+- **Large teams (>10 people):** Multirepo with clear dependencies
+
+---
+
+Class 6.4.2:
+	Title: Policy as Code and Testing
+	Description: Sentinel, OPA, and Terraform testing frameworks.
+Content Type: text
+Duration: 450 
+Order: 2
+		Text Content :
+ # Infrastructure Testing and Policy Enforcement
+
+## 1. Sentinel: Policy Language for Terraform Enterprise
+
+Sentinel enforces policies on Terraform runs.
+
+### Example Policies
+
+```sentinel
+# Enforce tagging
+import "tfplan/v2" as tfplan
+
+mandatory_tags = ["Environment", "Owner", "CostCenter"]
+
+resources = tfplan.resource_changes
+
+violations = []
+
+for resources as address, rc {
+  for rc.change.after.tags as tag, _ {
+    if mandatory_tags not contains tag {
+      append(violations, address)
+    }
+  }
+}
+
+main = length(violations) == 0
+```
+
+```sentinel
+# Prevent public S3 buckets
+import "tfplan/v2" as tfplan
+
+buckets = tfplan.resource_changes["aws_s3_bucket"]
+
+main = all buckets as address, bucket {
+  bucket.change.after.acl != "public-read" and
+  bucket.change.after.acl != "public-read-write"
+}
+```
+
+### Policy Sets
+
+```hcl
+# Add to Terraform Enterprise
+resource "tfe_policy_set" "aws_security" {
+  name         = "aws-security-policies"
+  organization = "my-org"
+  
+  policy_ids = [
+    tfe_sentinel_policy.no_public_s3.id,
+    tfe_sentinel_policy.require_tags.id,
+    tfe_sentinel_policy.instance_size_limit.id
+  ]
+}
+```
+
+### Enforcement Levels
+
+| Level | Behavior |
+| :--- | :--- |
+| **advisory** | Warn, but allow override |
+| **soft-mandatory** | Warn, require manager approval |
+| **hard-mandatory** | Fail, no override possible |
+
+---
+
+## 2. OPA with Terraform
+
+Using Open Policy Agent for IaC validation.
+
+### conftest: OPA for IaC
+
+```bash
+# Install conftest
+brew install conftest
+
+# Write policy
+cat > policy.rego << 'EOF'
+package main
+
+deny[msg] {
+    input.resource.aws_instance[_].instance_type == "t2.micro"
+    msg = "Instances must be t3 or larger"
+}
+
+deny[msg] {
+    input.resource.aws_security_group[sg].ingress[_].cidr_blocks[_] == "0.0.0.0/0"
+    msg = sprintf("Security group %s allows open access", [sg])
+}
+EOF
+
+# Test against Terraform plan
+terraform plan -json | conftest test -
+```
+
+### Advantages over Sentinel
+
+| Aspect | Sentinel | OPA |
+| :--- | :--- | :--- |
+| **Language** | Sentinel (proprietary) | Rego (general-purpose) |
+| **Requires** | Terraform Enterprise | CLI tool |
+| **Reusable** | TFE-specific | Any tool (Kubernetes, Docker, etc.) |
+| **Community** | Limited | Large (CNCF) |
+
+---
+
+## 3. Terraform Testing Frameworks
+
+### terraform-compliance: BDD Testing
+
+```gherkin
+# compliance.feature
+Feature: Ensure all AWS resources are properly tagged
+
+  Scenario: EC2 instances must have required tags
+    Given I have aws_instance defined
+    Then it must contain tags
+    And its tags.Environment must exist
+    And its tags.Owner must exist
+```
+
+```bash
+terraform plan -json | terraform-compliance -f compliance.feature
+```
+
+### Terratest: Go-Based Integration Testing
+
+```go
+// test/aws_test.go
+package test
+
+import (
+  "testing"
+  "github.com/gruntwork-io/terratest/modules/terraform"
+)
+
+func TestTerraform(t *testing.T) {
+  opts := &terraform.Options{
+    TerraformDir: "../",
+    Vars: map[string]interface{}{
+      "environment": "test",
+    },
+  }
+
+  terraform.InitAndApply(t, opts)
+  defer terraform.Destroy(t, opts)
+
+  // Assert outputs
+  vpcId := terraform.Output(t, opts, "vpc_id")
+  if vpcId == "" {
+    t.Fatal("VPC ID not found")
+  }
+
+  // Assert actual infrastructure
+  subnets := terraform.GetRandomSubnets(t, &ec2.Client{}, opts)
+  if len(subnets) == 0 {
+    t.Fatal("No subnets created")
+  }
+}
+```
+
+```bash
+go test -v test/aws_test.go
+```
+
+---
+
+## 4. Advanced Terraform Patterns
+
+### Dynamic Blocks
+
+```hcl
+# Generate ingress rules dynamically
+resource "aws_security_group" "main" {
+  name = "dynamic-sg"
+
+  dynamic "ingress" {
+    for_each = var.allowed_ports
+    content {
+      from_port   = ingress.value.from
+      to_port     = ingress.value.to
+      protocol    = ingress.value.protocol
+      cidr_blocks = ingress.value.cidrs
+    }
+  }
+}
+
+# Usage
+allowed_ports = [
+  { from = 80,   to = 80,   protocol = "tcp", cidrs = ["0.0.0.0/0"] },
+  { from = 443,  to = 443,  protocol = "tcp", cidrs = ["0.0.0.0/0"] },
+  { from = 22,   to = 22,   protocol = "tcp", cidrs = ["10.0.0.0/8"] }
+]
+```
+
+### for_each with Resource Attributes
+
+```hcl
+# Create multiple resources with specific names
+resource "aws_instance" "workers" {
+  for_each = {
+    web1 = { instance_type = "t3.micro",  az = "us-east-1a" },
+    web2 = { instance_type = "t3.small",  az = "us-east-1b" },
+    web3 = { instance_type = "t3.micro",  az = "us-east-1c" }
+  }
+
+  instance_type           = each.value.instance_type
+  availability_zone       = each.value.az
+  ami                     = data.aws_ami.ubuntu.id
+  iam_instance_profile    = aws_iam_instance_profile.main.name
+
+  tags = {
+    Name = "worker-${each.key}"
+  }
+}
+
+# Reference specific instance
+aws_instance.workers["web1"].id
+```
+
+### Conditional Logic
+
+```hcl
+resource "aws_db_instance" "main" {
+  # ... common config ...
+
+  # Only create replica in production
+  replicate_source_db = var.environment == "prod" ? aws_db_instance.primary.id : null
+
+  # Backup retention varies by environment
+  backup_retention_period = var.environment == "prod" ? 30 : 7
+
+  # Enable enhanced monitoring only in prod
+  enabled_cloudwatch_logs_exports = var.environment == "prod" ? ["postgresql"] : []
+}
+```
+
+---
+
+## 5. Module Design Patterns
+
+### Composition (Recommended)
+
+```hcl
+# Low-level module: VPC with subnets
+module "vpc" {
+  source = "./modules/vpc"
+  cidr   = "10.0.0.0/16"
+}
+
+# Mid-level module: Database in VPC
+module "database" {
+  source          = "./modules/rds"
+  vpc_id          = module.vpc.id
+  subnet_ids      = module.vpc.private_subnets
+}
+
+# High-level: Complete application stack
+module "app" {
+  source = "./modules/app"
+  
+  vpc_module  = module.vpc
+  db_endpoint = module.database.endpoint
+}
+```
+
+**Pros:** Small, focused, reusable
+**Cons:** Many modules to manage
+
+### Monolithic Module (Not Recommended)
+
+```hcl
+# One giant module for "complete-app"
+module "app" {
+  source = "./modules/app"
+  
+  # Requires 50+ variables
+  environment = var.environment
+  vpc_config = var.vpc_config
+  db_config = var.db_config
+  # ... many more
+}
+```
+
+**Cons:** Hard to reuse, difficult to test
+
+### Module Versioning
+
+```hcl
+# Reference module by version tag
+module "vpc" {
+  source = "git::https://github.com/myorg/terraform-vpc.git?ref=v2.1.0"
+  cidr   = "10.0.0.0/16"
+}
+
+# Or use private registry
+module "rds" {
+  source = "app.terraform.io/myorg/rds/aws"
+  version = "~> 3.0"  # >= 3.0, < 4.0
+}
+```
+
 ---
 
 Module 7:
@@ -6391,6 +8808,611 @@ If your phone buzzes 50 times a day for non-critical issues, you will ignore it 
 
 ---
 
+Topic 7.6:
+Title: Advanced Observability Topics
+Order: 6
+
+Class 7.6.1:
+	Title: Advanced Monitoring and Performance Optimization
+	Description: Custom metrics, advanced query optimization, and observability at scale.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Advanced Observability: From Metrics to Action
+
+## 1. Custom Metrics and Application Instrumentation
+
+Beyond the Golden Signals, applications emit custom business metrics.
+
+### Emitting Custom Metrics
+
+```python
+# Python with Prometheus client
+from prometheus_client import Counter, Histogram, Gauge, generate_latest
+
+# Counter: only increases
+orders_placed = Counter('orders_placed_total', 'Total orders placed')
+orders_placed.inc()
+
+# Gauge: can increase or decrease
+active_connections = Gauge('active_connections', 'Currently active connections')
+active_connections.set(42)
+
+# Histogram: buckets latency
+checkout_duration = Histogram('checkout_duration_seconds', 'Checkout duration')
+checkout_duration.observe(2.5)
+
+# Custom labels
+orders_by_region = Counter(
+    'orders_placed_by_region_total',
+    'Orders by region',
+    ['region', 'currency']
+)
+orders_by_region.labels(region='us-east', currency='usd').inc()
+```
+
+### Exposing Metrics
+
+```python
+# Flask app with Prometheus metrics
+from flask import Flask
+from prometheus_client import generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
+
+app = Flask(__name__)
+registry = CollectorRegistry()
+
+@app.route('/metrics')
+def metrics():
+    return generate_latest(registry), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+
+@app.route('/api/orders', methods=['POST'])
+def create_order():
+    orders_placed.inc()
+    # ... business logic ...
+    checkout_duration.observe(duration)
+    return jsonify(order)
+```
+
+### What to Measure
+
+**Business Metrics:**
+- Orders placed, revenue, conversion rate
+- User signups, active users
+- Feature usage
+
+**Application Metrics:**
+- Request rate per endpoint
+- Cache hit rate
+- Queue depth
+- Batch job duration
+
+**Resource Metrics:**
+- Database connections used
+- Kafka lag per topic
+- Memory usage per service
+
+---
+
+## 2. PromQL Advanced Queries
+
+PromQL is powerful for sophisticated monitoring.
+
+### Aggregation Over Time
+
+```promql
+# Last 5-minute error rate across all services
+sum(rate(http_requests_total{status=~"5.."}[5m]))
+/
+sum(rate(http_requests_total[5m]))
+
+# Per-service error rate
+sum by (service) (rate(http_requests_total{status=~"5.."}[5m]))
+/
+sum by (service) (rate(http_requests_total[5m]))
+```
+
+### Complex Joins
+
+```promql
+# Correlate request latency with CPU usage
+histogram_quantile(0.95, request_duration_seconds) 
+/ ignoring (instance)
+(cpu_usage_percent / 100)
+# Shows: is high CPU causing slow requests?
+```
+
+### Prediction and Trending
+
+```promql
+# Is disk usage growing dangerously?
+# If this trend continues, when will disk be full?
+predict_linear(node_filesystem_avail_bytes[1h], 3600)
+
+# If positive trend continues, alert when reaching 90% full
+ALERTS when disk fills at current rate
+```
+
+### Alert Examples
+
+```yaml
+# Alert if error rate is increasing (trend detection)
+- alert: IncreasingErrorRate
+  expr: |
+    (
+      rate(errors_total[5m]) 
+      > 
+      rate(errors_total offset 10m)
+    )
+    and
+    rate(errors_total[5m]) > 0.01
+  for: 5m
+  annotations:
+    summary: "Error rate is increasing"
+
+# Alert if service is degrading (composite)
+- alert: ServiceDegraded
+  expr: |
+    (histogram_quantile(0.95, request_duration) > 1)
+    and
+    (rate(http_requests_total[5m]) > 100)
+  annotations:
+    summary: "Service is slow under load"
+```
+
+---
+
+## 3. Tracing at Scale
+
+Distributed tracing becomes essential with many services.
+
+### Sampling Strategies
+
+**Uniform Sampling (10% of requests):**
+```yaml
+sampler:
+  type: const
+  param: 0.1  # Sample 10%
+```
+
+**Issues:** Miss rare errors
+
+**Error-Based Sampling:**
+```go
+// Always trace errors, sample successes
+func shouldSample(span *Span) bool {
+    if span.Status == ERROR {
+        return true  // 100% of errors
+    }
+    return rand.Float64() < 0.01  // 1% of successes
+}
+```
+
+**Adaptive Sampling:**
+```yaml
+sampler:
+  type: probabilistic
+  param: 0.01  # Base 1%
+  
+# Increase to 10% if error rate > 1%
+adaptive_sampler:
+  initial_sampling_rate: 0.01
+  sampling_rate_limit: 0.1
+```
+
+### Trace Storage and Query
+
+```bash
+# Jaeger backend options:
+# 1. Elasticsearch (good for scale, searchable)
+# 2. Cassandra (write-optimized, expensive)
+# 3. Badger (embedded database, dev only)
+
+# Query: Find all traces of failing checkout
+traces = jaeger.query(
+    service="checkout-service",
+    tag="error=true",
+    time_range="1h"
+)
+
+# Drill down into slowest trace
+trace = traces.sort_by_duration().last()
+spans = trace.spans  # See service breakdown
+```
+
+---
+
+## 4. Observability Platforms (Beyond Open Source)
+
+### Datadog: All-in-One
+
+```yaml
+# Datadog agent (stateless, cloud-native)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+  annotations:
+    ad.datadoghq.com/app.check_names: '["prometheus"]'
+    ad.datadoghq.com/app.init_configs: '[{}]'
+    ad.datadoghq.com/app.instances: |
+      [{
+        "prometheus_url": "http://%%host%%:8080/metrics"
+      }]
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+  - name: datadog-agent
+    image: datadog/agent:latest
+```
+
+**Features:**
+- Automatic dashboard generation
+- Anomaly detection (ML-based)
+- Service dependency maps
+- Cost attribution
+
+### New Relic: Language-Native
+
+```java
+// Java agent (automatic instrumentation)
+java -javaagent:/opt/newrelic/newrelic.jar \
+  -Dnewrelic.config.file=/etc/newrelic/newrelic.yml \
+  -jar app.jar
+
+// No code changes needed:
+// - HTTP latency tracked
+// - Database queries monitored
+// - Error tracking automatic
+```
+
+### Honeycomb: Event-Driven
+
+```javascript
+// Send structured events
+const tracer = new Tracer({
+  apiKey: "YOUR_KEY"
+});
+
+tracer.startSpan("checkout").then(span => {
+  span.addField("user_id", 123);
+  span.addField("items", 5);
+  span.addField("total", 99.99);
+  
+  // Automatic context propagation
+  callPaymentService(span);
+  
+  span.end();
+});
+```
+
+---
+
+## 5. Observability Best Practices
+
+### Know Your Baselines
+
+```
+Before going on-call, know what "normal" looks like:
+- Request latency: p50=50ms, p95=200ms, p99=1s
+- Error rate: <0.1%
+- Disk usage: 45%
+- Database connections: 50/200 available
+```
+
+### Correlation Analysis
+
+```promql
+# When request latency spikes, what else changes?
+1. Check error rate (errors causing slow responses?)
+2. Check database latency (DB issue?)
+3. Check GC pauses (garbage collection?)
+4. Check network metrics (network saturation?)
+```
+
+### Cardinality Management
+
+```yaml
+# DON'T do this (too many labels):
+metric{user_id, session_id, request_id, ...}
+
+# DO this (bounded cardinality):
+metric{region, service, endpoint, status}
+
+# Cardinality explosion detection:
+# If a metric has >1000 unique label combinations, investigate!
+```
+
+---
+
+Class 7.6.2:
+	Title: Database Performance and Optimization
+	Description: Query tuning, migrations, and replication strategies.
+Content Type: text
+Duration: 500 
+Order: 2
+		Text Content :
+ # Database Performance at Scale
+
+## 1. Query Optimization with EXPLAIN
+
+Every slow query starts with EXPLAIN.
+
+### EXPLAIN Output (PostgreSQL)
+
+```sql
+EXPLAIN ANALYZE
+SELECT o.id, o.total, c.name
+FROM orders o
+JOIN customers c ON o.customer_id = c.id
+WHERE o.created_at > '2024-01-01';
+
+-- Output:
+-- Seq Scan on orders o (cost=0.00..50000.00 rows=10000)
+--   Filter: created_at > '2024-01-01'
+--   -> Index Scan using idx_order_customer on customers c
+```
+
+**Red Flags:**
+- `Seq Scan` on large table → missing index
+- `Nested Loop` with millions of rows → join performance issue
+- High actual rows vs estimated rows → statistics out of date
+
+### Index Strategy
+
+```sql
+-- Wrong: Single-column index
+CREATE INDEX idx_user ON orders(user_id);
+
+-- Better: Multi-column index (covers more queries)
+CREATE INDEX idx_order_user_date 
+  ON orders(user_id, created_at DESC)
+  INCLUDE (total);  -- Include without sorting
+
+-- Best: Covering index (query doesn't touch table)
+-- Result: "Index Only Scan"
+```
+
+### Query Analysis Tools
+
+```sql
+-- PostgreSQL: Detailed stats
+SELECT query, mean_exec_time, calls
+FROM pg_stat_statements
+WHERE mean_exec_time > 1000  -- Queries taking >1 second
+ORDER BY mean_exec_time DESC;
+
+-- MySQL: Performance schema
+SELECT * FROM performance_schema.events_statements_summary_by_digest
+WHERE SUM_TIMER_WAIT > 1000000000000  -- 1 second in picoseconds
+ORDER BY SUM_TIMER_WAIT DESC;
+```
+
+---
+
+## 2. Database Migrations (Zero-Downtime)
+
+Migrations must work without downtime.
+
+### Flyway (Version-Based)
+
+```sql
+-- V1__create_users_table.sql
+CREATE TABLE users (
+  id BIGINT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL
+);
+
+-- V2__add_phone_column.sql
+ALTER TABLE users ADD COLUMN phone VARCHAR(20);
+
+-- V3__add_unique_email.sql
+ALTER TABLE users ADD CONSTRAINT uq_email UNIQUE (email);
+```
+
+```bash
+# Flyway automatically tracks migrations
+flyway info  # See migration status
+flyway migrate  # Apply pending migrations
+flyway validate  # Check for conflicts
+```
+
+### Liquibase (Declarative)
+
+```yaml
+# changelog.yaml
+databaseChangeLog:
+  - changeSet:
+      id: 1
+      author: alice
+      changes:
+        - createTable:
+            tableName: users
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  constraints:
+                    primaryKey: true
+  
+  - changeSet:
+      id: 2
+      author: bob
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column:
+                  name: phone
+                  type: VARCHAR(20)
+```
+
+```bash
+liquibase update
+liquibase rollback --count 1  # Undo last change
+```
+
+### Zero-Downtime Pattern (Backwards Compatibility)
+
+```sql
+-- Step 1: Add new column (no constraint)
+ALTER TABLE users ADD COLUMN phone_new VARCHAR(20);
+
+-- Step 2: App writes to both old and new columns
+INSERT INTO users (name, phone, phone_new) VALUES (...)
+
+-- Step 3: Backfill existing data
+UPDATE users SET phone_new = phone WHERE phone_new IS NULL;
+
+-- Step 4: Add constraint (after backfill complete)
+ALTER TABLE users ALTER COLUMN phone_new SET NOT NULL;
+
+-- Step 5: Drop old column
+ALTER TABLE users DROP COLUMN phone;
+
+-- Step 6: Rename
+ALTER TABLE users RENAME COLUMN phone_new TO phone;
+```
+
+---
+
+## 3. Replication Topologies
+
+### Primary-Replica (Master-Slave)
+
+```
+Write ─→ Primary (PostgreSQL)
+             ↓ (WAL streaming)
+         Replica (Read-Only)
+```
+
+```sql
+-- Primary: Enable replication
+ALTER SYSTEM SET wal_level = replica;
+ALTER SYSTEM SET max_wal_senders = 3;
+
+-- Replica: Connect to primary
+SELECT * FROM pg_create_physical_replication_slot('slot1');
+```
+
+**Monitoring:**
+```sql
+-- Check replication lag
+SELECT client_addr, state,
+       (pg_wal_lsn_diff(pg_current_wal_lsn(), flush_lsn) / 1024 / 1024)::int AS flush_lag_mb
+FROM pg_stat_replication;
+```
+
+### Primary-Primary (Multi-Master)
+
+**Challenges:**
+- Write conflicts (both masters wrote to same row)
+- Replication loops (need identifier to prevent)
+- Split-brain scenarios
+
+**Solutions:**
+- Conflict resolution (last-write-wins, custom logic)
+- Pglogical (PostgreSQL extension with conflict handling)
+- MongoDB replication sets (built-in)
+
+---
+
+## 4. Backup and Disaster Recovery
+
+### Backup Types
+
+| Type | Duration | Restore Time | Size | Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| **Physical (pg_basebackup)** | 10 min | 5 min | 50GB | Fast restore |
+| **Logical (pg_dump)** | 1 hour | 2 hours | 5GB | Portable, smaller |
+| **Continuous WAL** | Real-time | Varies | Minimal | Point-in-time recovery |
+| **Cloud Snapshots** | Instant | 5 min | Large | Disaster recovery |
+
+### Point-in-Time Recovery (PITR)
+
+```bash
+# Backup: base + WAL
+pg_basebackup -D /backup/base -Ft -z -P
+# WAL files: /var/lib/postgresql/pg_wal/*
+
+# To restore to 2024-01-15 14:00:00
+mkdir /restore/data
+tar -xzf /backup/base/base.tar.gz -C /restore/data
+
+# Create recovery config
+cat > /restore/data/recovery.conf << EOF
+restore_command = 'cp /backup/wal/%f %p'
+recovery_target_time = '2024-01-15 14:00:00'
+EOF
+
+# Start PostgreSQL
+pg_ctl -D /restore/data start
+```
+
+---
+
+## 5. Sharding and Partitioning
+
+Splitting data across multiple databases or tables.
+
+### Horizontal Partitioning (Sharding)
+
+```
+User IDs 1-1000    → Shard 1
+User IDs 1001-2000 → Shard 2
+User IDs 2001-3000 → Shard 3
+```
+
+```sql
+-- Shard key: user_id
+INSERT INTO shard_1.users VALUES (500, 'Alice', ...);
+INSERT INTO shard_2.users VALUES (1500, 'Bob', ...);
+```
+
+**Challenges:**
+- **Shard key selection** is critical (hot shards?)
+- **Resharding** when adding shards
+- **Cross-shard joins** are expensive
+
+### Vertical Partitioning (Decomposition)
+
+```
+users table:
+id, name, email (frequently accessed)
+
+users_profile table:
+id, bio, avatar, preferences (accessed less)
+```
+
+**Benefits:**
+- Better cache hit rate (smaller hot data)
+- Easier to scale hot data independently
+
+### Hash Partitioning (Built-in)
+
+```sql
+-- PostgreSQL declarative partitioning
+CREATE TABLE orders (
+  id BIGINT,
+  user_id BIGINT,
+  total DECIMAL
+) PARTITION BY HASH (user_id);
+
+CREATE TABLE orders_1 PARTITION OF orders
+  FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE orders_2 PARTITION OF orders
+  FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+-- ... more partitions
+
+-- Queries automatically go to correct partition
+SELECT * FROM orders WHERE user_id = 12345;
+-- PostgreSQL routes to appropriate partition
+```
+
+---
+
 Module 8:
 Title: Security & Compliance (DevSecOps)
 Description: Implement security-first architecture and DevSecOps practices. Learn vulnerability management, secrets handling, compliance, and security automation.
@@ -6890,6 +9912,2450 @@ If you get hacked, the first question is "How?" The answer is in the logs.
 * **The Problem:** You have logs from AWS, Linux, K8s, and Firewalls.
 * **The Solution:** A SIEM (like Splunk or Datadog Security) aggregates them all to find patterns.
 * *Scenario:* "5 failed login attempts on VPN" + "1 successful login on AWS" = **Account Takeover**.
+
+---
+
+Topic 8.6:
+Title: Secrets Management Deep-Dive
+Order: 6
+
+Class 8.6.1:
+	Title: HashiCorp Vault Advanced Topics
+	Description: Architecture, engines, authentication, and dynamic secrets.
+Content Type: text
+Duration: 600 
+Order: 1
+		Text Content :
+ # HashiCorp Vault: The Secrets Fortress
+
+Vault is the industry standard for centralized secret management. It goes beyond simple password storage—it provides dynamic secret generation, automatic rotation, and fine-grained access control.
+
+---
+
+## 1. Architecture: The Foundation
+
+### Core Components
+
+* **Vault Server:** The API endpoint that stores and distributes secrets. Stateless and scalable.
+* **Storage Backend:** Where secrets are actually stored (encrypted).
+  * Integrated Storage (Raft)
+  * External: Consul, S3, DynamoDB, PostgreSQL
+* **Secrets Engines:** Plugins that generate or store different types of secrets.
+* **Authentication Methods:** How clients prove their identity (tokens, AWS IAM, K8s, LDAP).
+* **Policies:** Fine-grained access control rules written in HCL.
+
+### High Availability Setup
+
+```
+                    ┌─────────────────────┐
+                    │   Load Balancer     │
+                    └──────────┬──────────┘
+                               │
+            ┌──────────┬────────┼────────┬──────────┐
+            │          │        │        │          │
+        ┌───▼──┐   ┌──▼───┐ ┌─▼────┐ ┌──▼───┐  ┌──▼───┐
+        │Vault │   │Vault │ │Vault │ │Vault │  │Vault │
+        │ 1    │   │ 2    │ │ 3    │ │ 4    │  │ 5    │
+        │(Lead)│   │(Seal)│ │(Seal)│ │(Seal)│  │(Seal)│
+        └──┬───┘   └──┬───┘ └─┬────┘ └──┬───┘  └──┬───┘
+           │          │      │         │       │
+           └──────────┼──────┼─────────┼───────┘
+                      │
+                ┌─────▼─────────┐
+                │Integrated Raft│
+                │ Storage       │
+                └───────────────┘
+```
+
+**Election Process:**
+- Nodes form a Raft cluster
+- One node is elected "Lead"
+- Others are "Standbys"
+- On Lead failure, new election occurs within seconds
+
+---
+
+## 2. Secrets Engines (The Powerhouses)
+
+### KV (Key-Value) - Simple Storage
+
+```bash
+vault secrets enable kv-v2
+
+# Store a secret
+vault kv put secret/database/prod \
+  username="admin" \
+  password="$(openssl rand -base64 32)"
+
+# Retrieve a secret
+vault kv get secret/database/prod
+```
+
+**Versions & Metadata:**
+- All writes are versioned
+- Can recover old secrets: `vault kv get -version=5 secret/database/prod`
+- Useful for rotation and disaster recovery
+
+---
+
+### Database Engine - Dynamic Credentials
+
+**The Revolution:** Stop storing static passwords. Generate temporary credentials on demand.
+
+```bash
+vault secrets enable database
+
+# Configure connection to PostgreSQL
+vault write database/config/postgres \
+  plugin_name=postgresql-database-plugin \
+  allowed_roles="readonly" \
+  connection_url="postgresql://admin:password@postgres.local:5432/postgres" \
+  username="vault" \
+  password="vaultpass"
+
+# Define a role
+vault write database/roles/readonly \
+  db_name=postgres \
+  creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
+  default_ttl="1h" \
+  max_ttl="24h"
+
+# Request temporary credentials
+vault read database/creds/readonly
+```
+
+**Output:**
+```
+Key                Value
+---                -----
+lease_id           database/creds/readonly/AbCdEfGhIjKlMnOpQrStUv
+lease_duration     3600s
+lease_renewable    true
+password           randomPassword123!
+username           v-token-readonly-AbCdEfGhI
+```
+
+**Why This Rocks:**
+- Credentials expire automatically (no manual revocation needed)
+- Each credential is unique (audit trail is clear)
+- Database can revoke individual users without affecting others
+- Works with: PostgreSQL, MySQL, MongoDB, Cassandra, etc.
+
+---
+
+### AWS Secrets Engine - Cloud-Native Credentials
+
+Generate AWS access keys with limited permissions.
+
+```bash
+vault secrets enable aws
+
+vault write aws/config/root \
+  access_key=AKIAIOSFODNN7EXAMPLE \
+  secret_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+  region=us-east-1
+
+# Define a role with specific IAM policy
+vault write aws/roles/s3-readonly \
+  credential_type=iam_user \
+  iam_groups=S3ReadOnly
+
+# Request credentials
+vault read aws/creds/s3-readonly
+```
+
+**Other Engines:**
+- **SSH:** Generate SSH certificates
+- **PKI:** Create TLS certificates on-the-fly
+- **LDAP:** Authenticate against directory servers
+- **Kubernetes Auth:** Pods authenticate with their service account
+
+---
+
+## 3. Authentication Methods (How Secrets Get Out)
+
+### Token Authentication (The Default)
+
+```bash
+# Create a token with specific policies
+vault token create \
+  -policy="app-policy" \
+  -ttl=24h \
+  -display-name="app-token-prod"
+
+# Output: hvs.CAESIF1nTsFhdFS...
+```
+
+**Token Leasing & Renewal:**
+- Tokens have TTL (time-to-live)
+- Apps can renew tokens before expiration
+- Max TTL enforced by policy (child tokens can't exceed parent TTL)
+
+---
+
+### Kubernetes Authentication
+
+Vault trusts the Kubernetes API server. Pods authenticate using their Service Account.
+
+```bash
+vault auth enable kubernetes
+
+vault write auth/kubernetes/config \
+  token_reviewer_jwt="@/var/run/secrets/kubernetes.io/serviceaccount/token" \
+  kubernetes_host="https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT" \
+  kubernetes_ca_cert="@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+vault write auth/kubernetes/role/app \
+  bound_service_account_names=app \
+  bound_service_account_namespaces=default \
+  policies="app-policy" \
+  ttl=24h
+```
+
+**Pod Login:**
+```bash
+curl --request POST \
+  --data @jwt.json \
+  http://vault.vault.svc.cluster.local:8200/v1/auth/kubernetes/login
+```
+
+---
+
+### AWS IAM Authentication
+
+EC2 instances or Lambda functions authenticate using their IAM identity.
+
+```bash
+vault auth enable aws
+
+vault write auth/aws/config/client \
+  access_key=AKIAIOSFODNN7EXAMPLE \
+  secret_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+vault write auth/aws/role/app-role \
+  auth_type=iam \
+  bound_iam_principal_arn="arn:aws:iam::123456789012:role/AppRole" \
+  policies="app-policy"
+```
+
+**From EC2:**
+```bash
+# EC2 auto-signs AWS SigV4 request
+vault login -method=aws -path=auth/aws/login
+```
+
+**Advantage:** No credentials in environment variables. IAM role = automatic trust.
+
+---
+
+### LDAP/Active Directory
+
+Enterprise organizations centralize identity.
+
+```bash
+vault auth enable ldap
+
+vault write auth/ldap/config \
+  url="ldap://ldap.company.com" \
+  userdn="cn=users,dc=company,dc=com" \
+  groupdn="cn=groups,dc=company,dc=com"
+
+vault write auth/ldap/groups/devops \
+  policies="devops-policy,default"
+```
+
+---
+
+## 4. Policies: The Access Control
+
+Policies are written in HCL and define what a user/app can do.
+
+```hcl
+# Example policy
+path "secret/data/app/*" {
+  capabilities = ["read", "list"]
+}
+
+path "secret/metadata/app/*" {
+  capabilities = ["read", "list"]
+}
+
+path "database/creds/app-role" {
+  capabilities = ["read"]
+}
+
+path "aws/creds/s3-access" {
+  capabilities = ["read"]
+}
+
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+```
+
+**Capabilities:**
+- `read` – Fetch a secret
+- `create` – Create a new secret (overwrite not allowed)
+- `update` – Modify an existing secret
+- `delete` – Remove a secret
+- `list` – Enumerate paths
+- `sudo` – Bypass policy (admin only)
+- `deny` – Explicitly deny access
+
+**Policy Best Practices:**
+1. **Least Privilege:** Users should only access what they need.
+2. **Wildcards:** Use `secret/app/*` instead of `secret/*`
+3. **Metadata vs Data:** Separate read permissions for metadata and actual values
+4. **Service Accounts:** Create specific policies for each application
+
+---
+
+## 5. Secret Rotation & Automation
+
+### Manual Rotation (Don't Do This)
+
+```bash
+# Old way: manually generate new password
+vault kv put secret/database/prod \
+  username="admin" \
+  password="$(openssl rand -base64 32)"
+# Hope the app picked it up... (it didn't)
+```
+
+### Automated Rotation (Vault's Way)
+
+Vault can rotate database passwords automatically.
+
+```bash
+vault write -f database/rotate-root/postgres
+```
+
+Vault generates a new password, updates it in the database, and stores it. Applications never know.
+
+### Secret Sync (Enterprise Feature)
+
+Vault can sync secrets to external systems:
+- AWS Secrets Manager
+- Azure Key Vault
+- Kubernetes Secrets
+- GitHub Secrets
+
+---
+
+## 6. Vault Agent (The Sidecar)
+
+Vault Agent runs as a daemon and handles authentication/secret delivery.
+
+```hcl
+# /etc/vault/agent.hcl
+pid_file = "/tmp/pidfile"
+
+vault {
+  address = "https://vault.service.consul:8200"
+}
+
+auto_auth {
+  method {
+    type = "kubernetes"
+    
+    config = {
+      role = "app"
+    }
+  }
+
+  sink {
+    type = "file"
+    config = {
+      path = "/tmp/.vault-token"
+    }
+  }
+}
+
+cache {
+  use_auto_auth_token = true
+}
+
+listener "unix" {
+  address = "/tmp/vault.sock"
+  tls_disable = true
+}
+```
+
+**Features:**
+- Auto-authentication (handles token renewal)
+- Caching (reduces load on Vault server)
+- Template rendering (inject secrets into config files)
+- Listener (proxy to Vault for client requests)
+
+---
+
+## 7. Kubernetes Integration (The Real-World Setup)
+
+### Helm Deployment
+
+```bash
+helm repo add hashicorp https://helm.releases.hashicorp.com
+helm install vault hashicorp/vault \
+  --set server.ha.enabled=true \
+  --set server.ha.replicas=3 \
+  --set server.dataStorage.size=10Gi
+```
+
+### Vault Agent Injector (Automatic Secret Injection)
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-pod
+  annotations:
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "app"
+    vault.hashicorp.com/agent-inject-secret-database: "secret/data/database/prod"
+    vault.hashicorp.com/agent-inject-template-database: |
+      {{- with secret "secret/data/database/prod" -}}
+      export DB_USER="{{ .Data.data.username }}"
+      export DB_PASSWORD="{{ .Data.data.password }}"
+      {{- end }}
+spec:
+  serviceAccountName: app
+  containers:
+  - name: app
+    image: myapp:latest
+    env:
+    - name: VAULT_ADDR
+      value: "http://vault.vault.svc.cluster.local:8200"
+```
+
+**Magic:**
+- Mutating webhook intercepts pod creation
+- Injects Vault Agent sidecar
+- Agent authenticates with K8s ServiceAccount
+- Secrets rendered into mounted files or env vars
+- App never talks to Vault directly
+
+---
+
+## 8. Common Interview Questions
+
+**Q: How does Vault prevent a compromised app from reading all secrets?**
+A: Policies are tied to authentication identity. If an app authenticates as `app-role`, it can only access secrets listed in the `app-role` policy.
+
+**Q: What happens if a Vault node crashes?**
+A: In HA mode, another node becomes Lead immediately. Clients retry and connect to the new Lead.
+
+**Q: Can I store secrets in Vault and Git?**
+A: No. Vault is the source of truth. Git should have only: infrastructure code, Vault addresses, role names—not secrets.
+
+---
+
+## Production Checklist
+
+- [ ] **HA Enabled:** At least 3 nodes with Raft/Integrated Storage
+- [ ] **Backups:** Regularly backup the storage backend
+- [ ] **Audit Logging:** All secret accesses logged to CloudTrail/Datadog
+- [ ] **Authentication:** Kubernetes (k8s) or AWS IAM, not token-based
+- [ ] **Policies:** Least privilege, regularly audited
+- [ ] **Rotation:** Database engines used for dynamic credentials
+- [ ] **Monitoring:** Alert on failed auth attempts, HA leader changes
+- [ ] **Sealed/Unsealed:** Automatic unsealing (Cloud KMS, not manual)
+
+---
+
+Class 8.6.2:
+	Title: SOPS and Sealed Secrets
+	Description: Encrypting secrets in Git.
+Content Type: text
+Duration: 400 
+Order: 2
+		Text Content :
+ # Encrypting Secrets in Git (SOPS & Sealed Secrets)
+
+## 1. The Problem: Secrets in Git
+
+Git repositories are version controlled, shared, and often public on GitHub. Storing secrets here is a disaster waiting to happen.
+
+**Common Mistakes:**
+- `export AWS_SECRET_ACCESS_KEY=AKIA...` in shell scripts
+- Database passwords hardcoded in config files
+- SSH keys accidentally committed
+
+Once in Git history, they are there forever (even if you delete them).
+
+---
+
+## 2. SOPS (Secrets Operations) - AWS/GCP/Azure
+
+SOPS encrypts specific fields in YAML/JSON files using cloud KMS.
+
+### Installation & Setup
+
+```bash
+# Install SOPS
+brew install sops
+
+# Install AWS plugin
+brew install sops-aws-kms-plugin
+```
+
+### Encrypt a File (Using AWS KMS)
+
+```bash
+# Create a secrets file
+cat > secrets.yaml << EOF
+database:
+  username: admin
+  password: supersecret
+  host: db.example.com
+EOF
+
+# Encrypt using AWS KMS
+export AWS_PROFILE=prod
+sops --encrypt \
+  --kms "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012" \
+  secrets.yaml > secrets.enc.yaml
+
+# Now safe to commit!
+git add secrets.enc.yaml
+git commit -m "Add encrypted secrets"
+```
+
+### The Encrypted File (Human-Readable!)
+
+```yaml
+database:
+  username: admin
+  password: ENC[AES256_GCM,data:abcd1234...,iv:xyz,tag:abc,type:str]
+  host: db.example.com
+sops:
+  kms:
+  - arn: arn:aws:kms:us-east-1:123456789012:key/12345678...
+    created_at: '2024-01-15T10:00:00Z'
+    enc: AES_encryption_key_encrypted_by_KMS
+```
+
+**Magic:** SOPS shows you the plaintext fields but encrypts only the values.
+
+### Decrypt (Automatic During Deployment)
+
+```bash
+# Developers decrypt locally
+sops -d secrets.enc.yaml
+
+# In CI/CD pipelines
+sops -d secrets.enc.yaml | kubectl apply -f -
+```
+
+### Git Workflow with SOPS
+
+```bash
+# 1. Developer edits secret
+sops secrets.enc.yaml
+# SOPS automatically decrypts, opens in $EDITOR, re-encrypts on save
+
+# 2. Diff before committing
+sops diff secrets.enc.yaml
+# Shows human-readable diffs of changes
+
+# 3. Commit
+git add secrets.enc.yaml
+git commit -m "Update database password"
+
+# 4. CI/CD decrypts with KMS key (role-based access)
+sops -d secrets.enc.yaml | kubectl apply -f -
+```
+
+### KMS Key Access Control
+
+```hcl
+# AWS IAM Policy: Only specific roles can decrypt
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:role/GitHubActionsRole"
+      },
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:us-east-1:123456789012:key/*"
+    }
+  ]
+}
+```
+
+---
+
+## 3. GCP Google Cloud KMS
+
+```bash
+# Encrypt using GCP KMS
+sops --encrypt \
+  --gcp-kms "projects/my-project/locations/us/keyRings/sops/cryptoKeys/main" \
+  secrets.yaml > secrets.enc.yaml
+```
+
+**Advantage:** Seamless GCP integration, no separate credentials needed.
+
+---
+
+## 4. Azure Key Vault
+
+```bash
+# Encrypt using Azure Key Vault
+sops --encrypt \
+  --azure-kv https://myvault.vault.azure.net/keys/sops/version \
+  secrets.yaml > secrets.enc.yaml
+```
+
+---
+
+## 5. Sealed Secrets (Kubernetes-Native)
+
+Sealed Secrets is a Kubernetes controller that encrypts secrets so they can safely be committed to Git.
+
+### Installation
+
+```bash
+helm repo add sealed-secrets https://kubernetes.github.io/sealed-secrets
+helm install sealed-secrets -n kube-system sealed-secrets/sealed-secrets
+```
+
+### Seal a Secret
+
+```bash
+# 1. Create a normal Kubernetes secret
+cat << EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque
+data:
+  password: c3VwZXJzZWNyZXQ=  # base64 encoded
+EOF
+
+# 2. Export and seal it
+kubectl get secret mysecret -o yaml | \
+kubeseal -f - > mysealedsecret.yaml
+
+# 3. Delete the original secret
+kubectl delete secret mysecret
+```
+
+### The Sealed Secret (Safe for Git!)
+
+```yaml
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: mysecret
+spec:
+  encryptedData:
+    password: AgBvA3FgK7x8Kp... (encrypted blob)
+  template:
+    metadata:
+      name: mysecret
+    type: Opaque
+```
+
+### How It Works
+
+1. **Sealing:** Uses the Sealed Secrets controller's public key (stored in the cluster)
+2. **Unsealing:** Controller decrypts using its private key (never leaves cluster)
+3. **Result:** A normal K8s Secret is created (apps see plaintext)
+
+### Deployment
+
+```bash
+# Commit to Git
+git add mysealedsecret.yaml
+git commit -m "Add sealed secret"
+
+# Deploy
+kubectl apply -f mysealedsecret.yaml
+
+# Controller automatically decrypts and creates the Secret
+kubectl get secret mysecret
+```
+
+---
+
+## 6. SOPS vs Sealed Secrets
+
+| Aspect | SOPS | Sealed Secrets |
+| :--- | :--- | :--- |
+| **Encryption** | AWS/GCP/Azure KMS | K8s-native private key |
+| **Portability** | High (cloud provider agnostic) | Low (tied to cluster) |
+| **Ease of Use** | Medium (requires CLI) | High (kubectl-native) |
+| **Disaster Recovery** | Easy (KMS key backup) | Hard (must backup cluster key) |
+| **Multi-Environment** | Excellent (different KMS keys per env) | Difficult (each cluster is separate) |
+| **Use Case** | Git workflow, CI/CD, multi-cluster | Single cluster, audit requirements |
+
+---
+
+## 7. Production Checklist
+
+- [ ] Secrets encrypted before Git commit
+- [ ] KMS keys rotated annually
+- [ ] Access to decrypt logged and monitored
+- [ ] Separate keys for dev/staging/prod
+- [ ] Backup of encryption keys stored safely
+- [ ] No plaintext secrets in Git history (use `git-secrets` to prevent)
+
+---
+
+Topic 8.7:
+Title: Container Security
+Order: 7
+
+Class 8.7.1:
+	Title: Image Scanning and Supply Chain Security
+	Description: Trivy, Clair, Snyk and vulnerability management.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Container Image Scanning: Your First Defense
+
+Container images are your supply chain. If you deploy a vulnerable image, you are shipping a backdoor to production.
+
+---
+
+## 1. Trivy: The Fast Scanner
+
+Trivy is the industry standard for **fast, accurate vulnerability scanning**. It scans:
+- **OS packages** (apt, yum, apk)
+- **Application dependencies** (pip, npm, maven, go mod)
+- **Container configuration** (Dockerfile misconfigurations)
+- **IaC** (Terraform, CloudFormation, K8s manifests)
+
+### Installation & Basic Usage
+
+```bash
+# Install Trivy
+brew install trivy
+
+# Scan a local image
+trivy image myapp:latest
+
+# Scan a running container
+trivy image --input /path/to/image.tar
+
+# Output example:
+# myapp:latest (debian 11.6)
+# Found 12 vulnerabilities
+# 
+# CRITICAL: CVE-2024-1234 in openssl
+# Library: openssl (1.1.1)
+# Severity: CRITICAL
+# Fix Version: 1.1.1w
+```
+
+### Scanning in CI/CD
+
+```bash
+# Fail build if critical CVEs found
+trivy image \
+  --severity CRITICAL,HIGH \
+  --exit-code 1 \
+  myapp:$GITHUB_SHA
+
+# Generate SBOM (Software Bill of Materials)
+trivy image \
+  --format cyclonedx \
+  --output sbom.json \
+  myapp:latest
+```
+
+### Trivy Configuration
+
+```yaml
+# .trivy.yaml
+severity:
+  - CRITICAL
+  - HIGH
+
+scanners:
+  - vuln
+  - config
+  - secret
+
+skip-dirs:
+  - tests
+  - vendor
+
+ignorefile: .trivyignore
+```
+
+### Ignoring False Positives
+
+```
+# .trivyignore
+# Format: CVE-YYYY-XXXX expires YYYY-MM-DD
+
+CVE-2024-1234
+CVE-2024-5678 expires 2024-12-31  # Temporary ignore, expires in 1 year
+```
+
+---
+
+## 2. Clair: The Static Analysis Engine
+
+Clair is a vulnerability scanner that runs as a service. It powers Docker Hub, Quay.io, and harbor.
+
+### Architecture
+
+```
+┌─────────────────────────┐
+│  Image Repository       │
+│  (Docker Hub, Quay)     │
+└──────────────┬──────────┘
+               │
+        (Webhook)
+               │
+         ┌─────▼──────┐
+         │  Clair API │
+         └─────┬──────┘
+               │
+         ┌─────▼──────────┐
+         │ Vulnerability  │
+         │ DB (Updated    │
+         │ hourly)        │
+         └────────────────┘
+```
+
+### Clair vs Trivy
+
+| Aspect | Trivy | Clair |
+| :--- | :--- | :--- |
+| **Deployment** | CLI tool | Service/API |
+| **Speed** | Very fast (offline) | Slower (needs DB lookups) |
+| **Accuracy** | High | Very high (curated DB) |
+| **Integration** | CI/CD pipelines | Container registries |
+| **Database** | Built-in (updates automatically) | PostgreSQL backend |
+| **Real-time Scanning** | No | Yes (continuous monitoring) |
+
+**When to Use:**
+- Trivy: In CI/CD, local dev, quick scans
+- Clair: Registry integration, continuous monitoring
+
+---
+
+## 3. Snyk: The Developer-First Scanner
+
+Snyk focuses on **developer experience** and **dependency vulnerability management**.
+
+### Key Features
+
+* Scans dependencies (npm, pip, maven, etc.)
+* Provides remediation advice (upgrade specific packages)
+* Monitors Git repos continuously
+* Provides fix PRs automatically
+
+### Snyk in a GitHub Workflow
+
+```bash
+# Install Snyk
+npm install -g snyk
+
+# Authenticate
+snyk auth
+
+# Test your project
+snyk test
+# Output: Found 15 vulnerabilities in dependencies
+#   - Express 4.17.1 has ReDOS vulnerability
+#   - Mongoose 5.1.0 has prototype pollution
+#   Recommendations:
+#   - Upgrade express to 4.18.0
+#   - Upgrade mongoose to 5.13.0
+
+# Fix automatically (where possible)
+snyk fix
+
+# Monitor continuously (syncs with GitHub)
+snyk monitor
+```
+
+### Snyk in CI/CD
+
+```yaml
+# .github/workflows/snyk.yml
+name: Snyk Test
+on: [push, pull_request]
+
+jobs:
+  snyk:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: snyk/actions/setup@master
+    - run: snyk test --severity-threshold=high
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+```
+
+---
+
+## 4. Policy Enforcement: Scanning Strategy
+
+### Shift-Left: Scan Early
+
+```yaml
+# CI/CD Pipeline stages
+Build:
+  Lint & Test:
+    - Run unit tests
+  Scan for Vulnerabilities:
+    - Trivy: Local dependency scan
+    - npm audit: Direct dependencies
+    - SAST: Source code analysis
+  Build Image:
+    - Docker build
+  Scan Image:
+    - Trivy image scan
+    - FAIL if CRITICAL found
+  Push to Registry:
+    - Push only if scan passed
+  
+Deploy:
+  Run Clair/Registry Scanner:
+    - Continuous monitoring
+    - Alert on new CVEs in deployed images
+```
+
+### Policy: Fix or Explain
+
+**Rule 1: No deployment with CRITICAL vulnerabilities.**
+```bash
+trivy image --severity CRITICAL --exit-code 1 myapp:latest
+# If this fails, deployment is blocked
+```
+
+**Rule 2: HIGH vulnerabilities require exception.**
+```bash
+# Document why the CVE is acceptable
+# (e.g., "Only affects CLI mode, not server mode")
+echo "CVE-2024-1234" >> .trivyignore-justification.md
+```
+
+**Rule 3: Alert on new vulnerabilities in production.**
+```bash
+# Weekly Clair scans of production images
+# Alert Slack if new CVE found
+```
+
+---
+
+## 5. SBOM (Software Bill of Materials)
+
+An SBOM lists all components in your image.
+
+```bash
+# Generate SBOM with Trivy
+trivy image --format cyclonedx --output sbom.json myapp:latest
+
+# Output (cyclonedx format):
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "components": [
+    {
+      "type": "library",
+      "name": "openssl",
+      "version": "1.1.1",
+      "purl": "pkg:deb/debian/openssl@1.1.1?arch=amd64&distro=debian-11.6"
+    },
+    {
+      "type": "library",
+      "name": "python",
+      "version": "3.9.2"
+    }
+  ]
+}
+```
+
+**Why SBOM Matters:**
+- **Compliance:** SOC 2, PCI-DSS require component tracking
+- **Response:** If CVE announced, quickly check if SBOM is affected
+- **Transparency:** Know exactly what's in your images
+
+---
+
+## 6. Signature Verification (Cosign)
+
+Ensure images are built by trusted parties.
+
+```bash
+# Install Cosign
+brew install sigstore/tap/cosign
+
+# Sign an image
+cosign sign --key cosign.key myapp:latest
+
+# Verify signature before deployment
+cosign verify --key cosign.pub myapp:latest
+
+# In Kubernetes (enforce with policy)
+# Only allow images signed by trusted keys
+```
+
+---
+
+## Production Scanning Strategy
+
+```
+┌──────────────┐
+│ Developer    │
+│ Commits Code │
+└──────┬───────┘
+       │
+┌──────▼──────────────────────────────┐
+│ Trivy Scan (npm/pip dependencies)   │
+│ SAST Scan (code vulnerabilities)    │
+│ License Check                       │
+└──────┬───────────────────────────────┘
+       │ FAIL if CRITICAL/HIGH + no exception
+       │
+┌──────▼──────────────────────────────┐
+│ Build Container Image               │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼──────────────────────────────┐
+│ Trivy Scan Image                    │
+│ Check for OS vulns, config issues   │
+└──────┬───────────────────────────────┘
+       │ FAIL if CRITICAL
+       │
+┌──────▼──────────────────────────────┐
+│ Sign Image (Cosign)                 │
+│ Generate SBOM                       │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼──────────────────────────────┐
+│ Push to Registry                    │
+│ Registry enables Clair scanning     │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼──────────────────────────────┐
+│ Deployment                          │
+│ Verify signature + policy admission │
+└──────────────────────────────────────┘
+```
+
+---
+
+Class 8.7.2:
+	Title: Runtime Security (Falco)
+	Description: Detecting malicious behavior in containers.
+Content Type: text
+Duration: 400 
+Order: 2
+		Text Content :
+ # Runtime Security: Detecting the Breach
+
+Image scanning is **preventive**. Falco is **detective**. It monitors what containers are actually doing and alerts on suspicious behavior.
+
+---
+
+## 1. Falco: The Eyes in the Cluster
+
+Falco is a **runtime security tool** that monitors system calls inside containers and alerts on policy violations.
+
+### Installation in Kubernetes
+
+```bash
+# Using Helm
+helm repo add falcosecurity https://falcosecurity.github.io/charts
+helm install falco falcosecurity/falco \
+  --namespace falco \
+  --create-namespace \
+  --set ebpf.enabled=true  # Use eBPF for performance
+
+# Falco runs as a DaemonSet on every node
+kubectl get pods -n falco
+# falco-s4jkl (node1)
+# falco-m8pwq (node2)
+# falco-z2nqr (node3)
+```
+
+### Example Rules (Detecting Suspicious Activity)
+
+```yaml
+# /etc/falco/rules.d/custom-rules.yaml
+
+- rule: Unauthorized Shell in Container
+  desc: A shell was spawned in a container (possible compromise)
+  condition: >
+    spawned_process
+    and container
+    and proc.name in (bash, sh)
+  output: >
+    Unauthorized shell
+    (user=%user.name command=%proc.cmdline container_id=%container.id)
+  priority: WARNING
+  tags: [shell, container]
+
+- rule: Write to System Binaries
+  desc: Attempt to modify system binaries (malware installation?)
+  condition: >
+    open
+    and container
+    and fd.name startswith /bin/
+    and write
+  output: >
+    File write to binary
+    (user=%user.name file=%fd.name container_id=%container.id)
+  priority: CRITICAL
+  tags: [malware, persistence]
+
+- rule: Suspicious Network Connection
+  desc: Container connecting to rare external IP
+  condition: >
+    outbound
+    and container
+    and not fd.sip in (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+  output: >
+    External network connection
+    (src=%fd.sip dst=%fd.dip port=%fd.dport container=%container.name)
+  priority: WARNING
+  tags: [network, exfil]
+```
+
+### Alert Output (What Falco Sees)
+
+```
+2024-01-15T14:23:45.123Z WARNING Unauthorized shell in Container
+  user=root
+  command=/bin/bash
+  container_id=a1b2c3d4e5f6
+  container_name=redis-prod
+
+2024-01-15T14:25:12.456Z CRITICAL Write to System Binaries
+  user=nobody
+  file=/usr/bin/curl
+  container_id=xyz789
+  container_name=app-staging
+```
+
+---
+
+## 2. Syscall Monitoring (The Foundation)
+
+Falco uses eBPF (extended Berkeley Packet Filter) to monitor all system calls.
+
+### What's a System Call?
+
+```c
+// Application code
+FILE *f = fopen("/etc/passwd", "r");
+
+// Kernel gets invoked
+syscall: open("/etc/passwd", O_RDONLY)
+// Falco logs this
+```
+
+### Key Syscalls Falco Watches
+
+| Syscall | Significance | Risk |
+| :--- | :--- | :--- |
+| `execve` | Process creation | High (shellcode execution) |
+| `open` | File access | Medium (data exfiltration) |
+| `connect` | Network connection | High (C&C communication) |
+| `clone` | Process fork | Medium (resource exhaustion) |
+| `mmap` | Memory mapping | Medium (code injection) |
+| `load_kernel_module` | Kernel module load | Critical (rootkit) |
+
+---
+
+## 3. Falco Rules (The Policies)
+
+Rules are YAML that define conditions and actions.
+
+```yaml
+- rule: Read Sensitive File
+  desc: Detect reads of sensitive files
+  condition: >
+    read
+    and fd.name in (/etc/shadow, /etc/passwd, /root/.ssh/id_rsa)
+  output: >
+    Sensitive file read
+    (user=%user.name file=%fd.name command=%proc.name)
+  priority: CRITICAL
+  tags: [sensitive_data]
+```
+
+### Rule Anatomy
+
+```
+condition: >
+  [SYSCALL_TYPE] [OPERATOR] [VALUE]
+  and container
+  and not exception
+```
+
+**Operators:**
+- `=` Equal
+- `!=` Not equal
+- `startswith` String starts with
+- `contains` String contains
+- `in` Value in list
+- `not` Logical NOT
+- `and` Logical AND
+- `or` Logical OR
+
+---
+
+## 4. Integration with Alert Systems
+
+### Send Alerts to Slack
+
+```yaml
+# Falco Alerts → Slack
+json:
+  output_format: json
+
+listeners:
+  - name: gRPC
+    address: "0.0.0.0:5060"
+
+outputs:
+  - name: slack_alert
+    type: webhook
+    url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+    filter:
+      - priority: ["WARNING", "CRITICAL"]
+```
+
+### Send to Datadog
+
+```yaml
+outputs:
+  - name: datadog
+    type: http
+    url: "https://http-intake.logs.datadoghq.com/v1/input"
+    config:
+      api_key: "YOUR_DATADOG_API_KEY"
+```
+
+---
+
+## 5. Tuning Falco (Reduce False Positives)
+
+Falco can be noisy. You must tune rules to your environment.
+
+```yaml
+# Suppress expected activity
+- macro: safe_bash_commands
+  condition: >
+    proc.cmdline in (
+      /bin/bash -c "echo test",
+      /bin/bash /scripts/startup.sh
+    )
+
+- rule: Unauthorized Shell (Tuned)
+  desc: Shell spawned in container (excluding safe commands)
+  condition: >
+    spawned_process
+    and container
+    and proc.name = bash
+    and not safe_bash_commands
+  output: Suspicious shell
+  priority: WARNING
+```
+
+---
+
+## 6. Production Falco Deployment
+
+```yaml
+# DaemonSet with alerts
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: falco
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: falco
+        image: falcosecurity/falco:latest
+        securityContext:
+          privileged: true  # eBPF requires elevated privileges
+        volumeMounts:
+        - name: docker
+          mountPath: /var/run/docker.sock
+      volumes:
+      - name: docker
+        hostPath:
+          path: /var/run/docker.sock
+```
+
+---
+
+## 7. Response to Falco Alerts
+
+**Alert: Unauthorized shell in production container**
+
+```
+Action Plan:
+1. Immediately isolate the pod (kubectl delete pod)
+2. Preserve logs (kubectl logs for evidence)
+3. Trigger incident response
+4. Investigate: How did shell get there?
+   - Compromised image?
+   - Privilege escalation?
+5. Quarantine and analyze container image
+6. Notify security team
+```
+
+---
+
+## Key Takeaway
+
+Falco answers: **"What is currently happening inside my containers?"**
+
+Combined with image scanning:
+- **Image Scanning:** Prevents known vulnerabilities
+- **Falco:** Detects actual attacks
+
+Together they form a **defense-in-depth** security posture.
+
+---
+
+Topic 8.8:
+Title: Kubernetes Security
+Order: 8
+
+Class 8.8.1:
+	Title: Pod Security Standards and seccomp
+	Description: PSS, seccomp, and AppArmor.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Kubernetes Security: Locking Down the Cluster
+
+## 1. Pod Security Standards (PSS) - The Framework
+
+Pod Security Standards define **how privileged a Pod is allowed to be**. They replace the deprecated Pod Security Policy (PSP).
+
+### Three Profiles
+
+#### Privileged (Least Restrictive)
+
+Allows all capabilities. Used for system/infrastructure pods.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-pod
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+    securityContext:
+      privileged: true        # Root-like access to host
+      allowPrivilegeEscalation: true
+      capabilities:
+        add:
+        - SYS_ADMIN
+        - NET_ADMIN
+```
+
+**Use Case:** CNI plugins, kubelet, storage drivers. (NOT application containers)
+
+#### Baseline (Restricted)
+
+Prevents privilege escalation and dangerous capabilities.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: baseline-pod
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+    securityContext:
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+```
+
+**Prevents:**
+- Running as root
+- Adding capabilities
+- Writing to root filesystem
+
+**Allows:**
+- Reading files
+- Network access
+- Some filesystem writes
+
+#### Restricted (Most Secure)
+
+Enforces strong isolation.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restricted-pod
+spec:
+  containers:
+  - name: app
+    image: distroless-app:latest
+    securityContext:
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+  volumes:
+  - name: tmp
+    emptyDir: {}
+```
+
+**Enforces:**
+- Non-root user
+- No privilege escalation
+- Read-only root filesystem
+- seccomp
+- SELinux
+- Resource limits
+
+---
+
+## 2. Pod Security Admission (PSA) - Enforcement
+
+PSA is a controller that enforces PSS at admission time.
+
+### Enable PSA
+
+```yaml
+# In apiserver configuration
+# /etc/kubernetes/manifests/kube-apiserver.yaml
+spec:
+  containers:
+  - name: kube-apiserver
+    command:
+    - kube-apiserver
+    - --enable-admission-plugins=PodSecurity
+    - --admission-control-config-file=/etc/kubernetes/psa.yaml
+```
+
+### PSA Configuration
+
+```yaml
+# /etc/kubernetes/psa.yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+- name: PodSecurity
+  configuration:
+    apiVersion: pod-security.admission.config.k8s.io/v1
+    kind: PodSecurityAdmissionConfiguration
+    defaults:
+      enforce: "restricted"      # Enforce restricted
+      audit: "restricted"        # Log violations
+      warn: "restricted"         # Warn on violations
+    exemptions:
+      namespaces:
+      - kube-system              # System namespaces exempt
+      - kube-public
+      runtimeClasses:
+      - gvisor                   # Special runtimes exempt
+```
+
+### Per-Namespace Enforcement
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: myapp
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+```
+
+---
+
+## 3. Seccomp (Secure Computing)
+
+Seccomp restricts which system calls a container can make.
+
+### Default Seccomp Profile
+
+```json
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]
+    }
+  ],
+  "syscalls": [
+    {
+      "names": ["read", "write", "open", "close", "stat", ...],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": ["load_kernel_module", "create_module"],
+      "action": "SCMP_ACT_ERRNO"  # Deny
+    }
+  ]
+}
+```
+
+**What Default Seccomp Blocks:**
+- Loading kernel modules
+- Raw socket creation (network spoofing)
+- ptrace (process debugging)
+- Administrative operations
+
+### Custom Seccomp Profile
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+spec:
+  securityContext:
+    seccompProfile:
+      type: Localhost
+      localhostProfile: my-profile.json
+  containers:
+  - name: app
+    image: myapp:latest
+```
+
+### Why Seccomp Matters
+
+**Scenario:** A vulnerability in your app allows arbitrary code execution. The attacker can:
+
+**Without seccomp:**
+- Load a kernel module (rootkit)
+- Modify network packets (MITM attacks)
+- Attach debugger to other processes
+
+**With seccomp:**
+- None of the above. System call is denied.
+- Attack surface dramatically reduced.
+
+---
+
+## 4. AppArmor Profiles
+
+AppArmor is a Linux Mandatory Access Control (MAC) system.
+
+### Create an AppArmor Profile
+
+```
+#include <tunables/global>
+profile myapp-profile flags=(attach_disconnected) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Allow read-only access to config
+  /etc/myapp/config.yaml r,
+
+  # Allow writing to logs
+  /var/log/myapp/*.log w,
+
+  # Deny write to root filesystem
+  deny /root/** w,
+
+  # Deny executing shells
+  deny /bin/bash x,
+  deny /bin/sh x,
+
+  # Allow network
+  network inet stream,
+  network inet dgram,
+}
+```
+
+### Load Profile
+
+```bash
+# Load into AppArmor
+sudo apparmor_parser -r /etc/apparmor.d/myapp-profile
+
+# Verify
+sudo aa-status | grep myapp-profile
+```
+
+### Use in Kubernetes
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-with-apparmor
+  annotations:
+    container.apparmor.security.beta.kubernetes.io/app: localhost/myapp-profile
+spec:
+  containers:
+  - name: app
+    image: myapp:latest
+```
+
+### AppArmor vs seccomp
+
+| Aspect | seccomp | AppArmor |
+| :--- | :--- | :--- |
+| **Level** | Syscall | File/Network |
+| **Granularity** | Very fine | Coarse |
+| **Performance** | Minimal overhead | Moderate |
+| **Setup** | Complex | Medium |
+| **Coverage** | All containers | Only with Linux |
+
+---
+
+## 5. Migration from Deprecated PSP
+
+```yaml
+# Old (Deprecated) Pod Security Policy
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+  - ALL
+  volumes:
+  - 'configMap'
+  - 'emptyDir'
+  - 'projected'
+  - 'secret'
+  - 'downwardAPI'
+  - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    rule: 'MustRunAs'
+  supplementalGroups:
+    rule: 'MustRunAs'
+  fsGroup:
+    rule: 'MustRunAs'
+  readOnlyRootFilesystem: false
+
+---
+
+# New (Recommended) Pod Security Standards + Admission
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: myapp
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+```
+
+---
+
+Class 8.8.2:
+	Title: OPA/Kyverno Policy as Code
+	Description: Kubernetes admission control and policy enforcement.
+Content Type: text
+Duration: 450 
+Order: 2
+		Text Content :
+ # Policy as Code: Automating Security Decisions
+
+Wouldn't it be amazing if security violations were **impossible** instead of just documented?
+
+That's what policy-as-code tools do. They enforce rules at admission time—before the resource ever enters the cluster.
+
+---
+
+## 1. OPA/Gatekeeper (The Industry Standard)
+
+Open Policy Agent (OPA) is a policy engine that can enforce arbitrary rules.
+
+### Installation
+
+```bash
+# Install Gatekeeper (OPA for Kubernetes)
+kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/master/deploy/gatekeeper.yaml
+
+# Verify
+kubectl get pods -n gatekeeper-system
+```
+
+### Rego Policy Language
+
+Policies are written in Rego, a logic programming language.
+
+```rego
+package kubernetes.admission
+
+import future.keywords.contains
+import future.keywords.if
+
+# Deny deployments without resource limits
+deny[msg] {
+    input.request.kind.kind == "Deployment"
+    container := input.request.object.spec.template.spec.containers[_]
+    not container.resources.limits
+    msg := sprintf("Container %v must have resource limits", [container.name])
+}
+
+# Deny images from untrusted registries
+deny[msg] {
+    input.request.kind.kind == "Pod"
+    container := input.request.object.spec.containers[_]
+    not startswith(container.image, "gcr.io/") 
+    not startswith(container.image, "quay.io/")
+    msg := sprintf("Image %v must be from trusted registry", [container.image])
+}
+
+# Deny pods running as root
+deny[msg] {
+    input.request.kind.kind == "Pod"
+    container := input.request.object.spec.containers[_]
+    not container.securityContext.runAsNonRoot == true
+    msg := sprintf("Container %v must run as non-root", [container.name])
+}
+
+# Deny LoadBalancer services in dev namespace
+deny[msg] {
+    input.request.kind.kind == "Service"
+    input.request.namespace == "dev"
+    input.request.object.spec.type == "LoadBalancer"
+    msg := "LoadBalancer services not allowed in dev namespace"
+}
+```
+
+### Deploying OPA Rules
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: require-labels
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    labels: ["app", "version", "owner"]
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          properties:
+            labels:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package kubernetes.admission
+        deny[msg] {
+            input.request.kind.kind == "Pod"
+            not input.request.object.metadata.labels
+            msg := "Pod must have labels"
+        }
+```
+
+### Testing OPA Policies
+
+```bash
+# Test locally before deploying
+opa eval -d policy.rego 'data.kubernetes.admission.deny'
+
+# Unit test
+opa test policy_test.rego -v
+```
+
+---
+
+## 2. Kyverno (Kubernetes-Native Alternative)
+
+Kyverno is simpler than OPA. Policies are YAML, not Rego.
+
+### Installation
+
+```bash
+helm repo add kyverno https://kyverno.github.io/kyverno/
+helm install kyverno kyverno/kyverno --namespace kyverno --create-namespace
+```
+
+### Kyverno Policy Example
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-requests-limits
+spec:
+  validationFailureAction: enforce  # Block violations
+  rules:
+  - name: check-container-resources
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "CPU and memory limits required"
+      pattern:
+        spec:
+          containers:
+          - resources:
+              limits:
+                memory: "?*"
+                cpu: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: no-privileged
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Privileged pods not allowed"
+      pattern:
+        spec:
+          containers:
+          - securityContext:
+              privileged: false
+```
+
+### Kyverno for Image Verification
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-images-signed
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: check-signature
+    match:
+      resources:
+        kinds:
+        - Pod
+    verifyImages:
+    - imageReferences:
+      - "gcr.io/myproject/*"
+      attestors:
+      - name: check-cosign
+        entries:
+        - keys:
+            publicKeys: |
+              -----BEGIN PUBLIC KEY-----
+              MFkwEwYHKoZIzj0CAQYIKoZIzj...
+              -----END PUBLIC KEY-----
+```
+
+---
+
+## 3. OPA vs Kyverno
+
+| Aspect | OPA/Gatekeeper | Kyverno |
+| :--- | :--- | :--- |
+| **Language** | Rego | YAML |
+| **Learning Curve** | Steep | Gentle |
+| **Flexibility** | Extremely flexible | Good for common rules |
+| **Performance** | Slower | Faster |
+| **Ecosystem** | Broader (works outside K8s) | K8s-specific |
+| **Policy Reuse** | Libraries, modularity | Templates |
+
+---
+
+## 4. Production Policy Examples
+
+### Example 1: Enforce Security Best Practices
+
+```yaml
+# Prevent sensitive data in environment variables
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: no-sensitive-env-vars
+spec:
+  validationFailureAction: audit  # Start with audit
+  rules:
+  - name: check-env-vars
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Secrets in env vars. Use secret volume mounts instead."
+      pattern:
+        spec:
+          containers:
+          - env:
+            - name: "?*PASSWORD*|*SECRET*|*KEY*"
+              value: "?*"
+```
+
+### Example 2: Multi-Tenancy Isolation
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-namespace-isolation
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: deny-cross-namespace-traffic
+    match:
+      resources:
+        kinds:
+        - NetworkPolicy
+    validate:
+      message: "NetworkPolicy must isolate to same namespace"
+      pattern:
+        spec:
+          podSelector: {}
+          policyTypes:
+          - Ingress
+          ingress:
+          - from:
+            - podSelector:
+                matchLabels: {}
+            - namespaceSelector:
+                matchLabels:
+                  name: ?*  # Must select specific namespace
+```
+
+### Example 3: Cost Control (Prod vs Dev)
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: resource-limits-by-env
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: enforce-prod-limits
+    match:
+      resources:
+        kinds:
+        - Pod
+        selector:
+          matchLabels:
+            env: production
+    validate:
+      message: "Production pods must have high resource limits"
+      pattern:
+        spec:
+          containers:
+          - resources:
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+  - name: allow-dev-flexibility
+    match:
+      resources:
+        kinds:
+        - Pod
+        selector:
+          matchLabels:
+            env: development
+    validate:
+      message: "Dev pods must have some limits"
+      pattern:
+        spec:
+          containers:
+          - resources:
+              limits:
+                cpu: "500m"
+                memory: "512Mi"
+```
+
+---
+
+## 5. Remediation with Kyverno
+
+Kyverno can not just validate—it can automatically fix issues.
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-network-policy
+spec:
+  validationFailureAction: audit
+  background: true  # Apply to existing resources
+  rules:
+  - name: add-default-deny-ingress
+    match:
+      resources:
+        kinds:
+        - Namespace
+    mutate:
+      patchStrategicMerge:
+        metadata:
+          labels:
+            network-policy: enabled
+```
+
+---
+
+## 6. Audit and Monitoring
+
+```bash
+# Check policy violations
+kubectl get policyreport -A
+
+# See violations per namespace
+kubectl get policyreport -n myapp -o wide
+
+# Detailed violation logs
+kubectl logs -n kyverno -l app=kyverno-admission-controller -f
+```
+
+---
+
+Topic 8.9:
+Title: Compliance Automation
+Order: 9
+
+Class 8.9.1:
+	Title: Compliance Frameworks and Cloud Custodian
+	Description: SOC 2, HIPAA, PCI-DSS automation and remediation.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Compliance Automation: Security at Scale
+
+Compliance is not a one-time audit. It's a continuous practice. Cloud Custodian and OPA automate compliance checks and remediation.
+
+---
+
+## 1. Compliance Frameworks Overview
+
+### SOC 2 (Service Organization Control 2)
+
+**Target:** SaaS companies storing customer data
+
+**Key Controls:**
+- Access logging (who accessed what)
+- Encryption in transit and at rest
+- Incident response procedures
+- Change management process
+
+**Cloud Custodian Policy (Example):**
+
+```yaml
+policies:
+  - name: ensure-s3-encryption
+    resource: s3
+    filters:
+      - ServerSideEncryptionConfiguration: absent
+    actions:
+      - type: encrypt-s3
+        key-id: arn:aws:kms:us-east-1:123456789012:key/12345678
+```
+
+---
+
+### HIPAA (Health Insurance Portability and Accountability Act)
+
+**Target:** Healthcare providers handling patient data (Protected Health Information - PHI)
+
+**Key Requirements:**
+- Encryption of PHI at rest and in transit
+- Network isolation (no direct internet access)
+- Access logs (audit trail)
+- Data residency (data must stay in US)
+
+**Cloud Custodian Policy:**
+
+```yaml
+policies:
+  - name: hipaa-ensure-rds-encryption
+    resource: rds
+    filters:
+      - StorageEncrypted: false
+    actions:
+      - type: terminate-instance  # Nuclear option for violations
+        force: true
+
+  - name: hipaa-ensure-no-public-rds
+    resource: rds
+    filters:
+      - PubliclyAccessible: true
+    actions:
+      - type: modify-db-instance
+        PubliclyAccessible: false
+```
+
+---
+
+### PCI-DSS (Payment Card Industry Data Security Standard)
+
+**Target:** Anyone handling credit card data
+
+**Key Rules:**
+- **Never** store CVV/CVC (card verification code)
+- Isolated network for payment processing
+- Encryption in transit (TLS 1.2+)
+- Access restricted to card data
+- Annual penetration testing
+
+**Cloud Custodian Policy:**
+
+```yaml
+policies:
+  - name: pci-isolate-payment-environment
+    resource: security-group
+    filters:
+      - type: ingress
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+    actions:
+      - type: modify-ingress
+        rule_type: egress
+        group-id: sg-payment-restricted
+        CidrIp: 10.0.1.0/24  # Only internal traffic
+
+  - name: pci-require-tls-1-2
+    resource: elb
+    filters:
+      - type: listener
+        PolicyNames: [non-tls-policy]
+    actions:
+      - type: modify-listener
+        PolicyNames: [ELBSecurityPolicy-TLS-1-2-2017-01]
+```
+
+---
+
+## 2. Cloud Custodian (Compliance Automation Engine)
+
+Cloud Custodian is a policy-as-code tool for AWS, Azure, and GCP. It enforces and remediates compliance violations automatically.
+
+### Installation
+
+```bash
+# Install Cloud Custodian
+pip install c7n
+
+# Verify
+custodian --version
+```
+
+### Policy Structure
+
+```yaml
+# compliance-policy.yaml
+policies:
+  # Policy 1: Find non-compliant resources
+  - name: find-unencrypted-volumes
+    description: Alert on EBS volumes without encryption
+    resource: ebs
+    filters:
+      - Encrypted: false
+    actions:
+      - type: notify
+        template: default.html
+        transport:
+          type: sqs
+          queue: https://sqs.us-east-1.amazonaws.com/123456789012/alerts
+
+  # Policy 2: Remediate automatically
+  - name: auto-encrypt-volumes
+    description: Automatically encrypt unencrypted EBS volumes
+    resource: ebs
+    filters:
+      - Encrypted: false
+      - VolumeSize: lt 1000  # Only small volumes (safer)
+    actions:
+      - type: copy-instance-snapshot
+        encrypted: true
+        copy-to-region: us-east-1
+```
+
+### Running Custodian
+
+```bash
+# Dry-run (see what would happen, don't change anything)
+custodian run -s output compliance-policy.yaml --dryrun
+
+# Actually execute
+custodian run -s output compliance-policy.yaml
+
+# Get results
+custodian report --format csv output/find-unencrypted-volumes.json > report.csv
+```
+
+---
+
+## 3. Common Cloud Custodian Policies
+
+### Enforce IAM Best Practices
+
+```yaml
+policies:
+  - name: disable-root-account-access
+    resource: iam-user
+    filters:
+      - type: access-key
+        key-state: Active
+    actions:
+      - type: remove-keys
+        delete: true
+
+  - name: enforce-mfa-on-console-users
+    resource: iam-user
+    filters:
+      - type: login-profile
+      - type: mfa-device
+        mfa-device: false
+    actions:
+      - type: notify
+        template: mfa-required.html
+        transport:
+          type: email
+          to: security@company.com
+```
+
+### S3 Security
+
+```yaml
+policies:
+  - name: block-public-s3-buckets
+    resource: s3
+    filters:
+      - type: bucket-access-control
+        access-control: PublicRead
+    actions:
+      - type: set-bucket-acl
+        acl: private
+
+  - name: enable-bucket-logging
+    resource: s3
+    filters:
+      - type: logging
+        key: null  # Logging not enabled
+    actions:
+      - type: enable-logging
+        target-bucket: central-logs
+        target-prefix: s3-logs/
+```
+
+### EC2 Cost Optimization
+
+```yaml
+policies:
+  - name: stop-idle-instances
+    resource: ec2
+    filters:
+      - type: instance-uptime-days
+        days: 30
+      - type: cpu-utilization
+        percent: 5
+        days: 7
+    actions:
+      - type: notify
+        template: idle-instance.html
+        transport:
+          type: sns
+          topic: arn:aws:sns:us-east-1:123456789012:alerts
+      - type: stop
+
+  - name: delete-unattached-volumes
+    resource: ebs
+    filters:
+      - type: volume-attachment-count
+        count: 0
+      - type: age-value
+        days: 7
+        op: greater-than
+    actions:
+      - type: delete
+```
+
+---
+
+## 4. Policy Enforcement Patterns
+
+### Pattern 1: Alert Only
+
+```yaml
+actions:
+  - type: notify
+    template: default.html
+    transport:
+      type: sns
+      topic: arn:aws:sns:us-east-1:123456789012:compliance-alerts
+```
+
+**Use Case:** New policies in testing phase
+
+---
+
+### Pattern 2: Auto-Remediate
+
+```yaml
+actions:
+  - type: modify-db-instance
+    PubliclyAccessible: false
+    ApplyImmediately: true
+```
+
+**Use Case:** Clear violations with low risk (e.g., disabling public access)
+
+---
+
+### Pattern 3: Terminate for Severe Violations
+
+```yaml
+actions:
+  - type: terminate
+    force: true
+```
+
+**Use Case:** Instances in restricted security groups, root account in use, etc.
+
+---
+
+## 5. Compliance Reporting
+
+Cloud Custodian generates reports for auditors.
+
+```bash
+# Generate CSV report
+custodian report --format csv output/*.json > compliance-report.csv
+
+# Generate JSON for integration with SIEM
+custodian report --format json output/*.json > compliance-report.json
+
+# Alert to Slack
+custodian run -s output policy.yaml && \
+  curl -X POST https://hooks.slack.com/services/... \
+    -d @output/summary.json
+```
+
+---
+
+## 6. Policy as Code Workflow
+
+```
+┌──────────────────────┐
+│ Write Policy YAML    │
+│ (Compliance team)    │
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│ Test on Dev Account  │
+│ (--dryrun mode)      │
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│ Code Review          │
+│ (GitHub PR)          │
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│ Merge to Main        │
+│ Auto-run in Prod     │
+└──────────┬───────────┘
+           │
+┌──────────▼───────────┐
+│ Generate Reports     │
+│ Audit Trail          │
+└──────────────────────┘
+```
+
+---
+
+## 7. Multi-Cloud Compliance
+
+Cloud Custodian supports AWS, Azure, and GCP with unified policies.
+
+```yaml
+policies:
+  # AWS Policy
+  - name: ensure-s3-encryption-aws
+    resource: aws.s3
+    filters:
+      - ServerSideEncryptionConfiguration: absent
+
+  # Azure Policy
+  - name: ensure-blob-encryption-azure
+    resource: azure.blob-container
+    filters:
+      - type: value
+        key: properties.encryption
+        value: null
+        value_type: absent
+
+  # GCP Policy
+  - name: ensure-gcs-encryption-gcp
+    resource: gcp.gcs
+    filters:
+      - type: value
+        key: encryption
+        value: null
+        value_type: absent
+```
+
+---
+
+## Production Checklist
+
+- [ ] Policies in Git (version controlled)
+- [ ] Dry-run on every deployment
+- [ ] Reports sent to security team weekly
+- [ ] Alerts configured for each policy
+- [ ] Exceptions documented and reviewed
+- [ ] No hardcoded AWS credentials in policies
+- [ ] Separate policies for dev/staging/prod
+- [ ] Regular policy audit (quarterly)
 
 ---
 
@@ -11907,6 +17373,5 @@ Order: 2
 3. **Communication:** You can explain your thinking clearly
 
 All three are necessary. You've got this!
-
 
 
