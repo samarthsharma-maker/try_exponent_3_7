@@ -1869,6 +1869,1569 @@ This challenge reflects **real on-call Linux scenarios**, not textbook questions
 
 ---
 
+Topic 2.6:
+Title: Advanced Shell Scripting
+Order: 6
+
+Class 2.6.1:
+	Title: Advanced Script Execution & Environment
+	Description: Shell behavior, profiles, and command types.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Advanced Shell Scripting Fundamentals
+
+## 1. Login vs Non-Login Shells
+
+Understanding which startup files execute is critical for troubleshooting environment issues.
+
+### Login Shell
+A shell that prompts for credentials (SSH, console login, `login` command).
+
+**Execution Order:**
+```
+1. /etc/profile           (system-wide settings)
+2. ~/.bash_profile        (if it exists)
+   or ~/.profile          (fallback)
+3. ~/.bashrc              (loaded from .bash_profile)
+```
+
+### Non-Login Shell
+A shell spawned without authentication (new terminal tab, `bash` command, script execution).
+
+**Execution Order:**
+```
+Only ~/.bashrc
+(Does NOT read /etc/profile or ~/.bash_profile)
+```
+
+**Why This Matters:**
+```bash
+# Put environment variables in ~/.bash_profile:
+export PATH="$HOME/.local/bin:$PATH"
+export JAVA_HOME="/usr/lib/jvm/java-11"
+
+# Put functions and aliases in ~/.bashrc:
+alias ll='ls -lh'
+source ~/.bashrc  # Non-login shells need this
+```
+
+---
+
+## 2. Internal (Builtin) vs External Commands
+
+**Builtins:**
+Commands built into the shell itself. No process spawning.
+```bash
+cd, echo, export, source, type, jobs, fg, bg
+```
+
+**Why `cd` must be builtin:**
+```bash
+# If cd were external:
+$ cd /tmp
+# Would spawn a child process, change directory in child
+# Child exits, parent still in original directory!
+# So cd MUST be builtin to affect the current shell
+```
+
+**External Commands:**
+Separate executables on disk.
+```bash
+/bin/ls, /usr/bin/grep, /usr/bin/awk
+```
+
+**Identifying Command Type:**
+```bash
+$ type cd
+cd is a shell builtin
+
+$ type ls
+ls is /bin/ls
+
+$ type -a echo
+echo is a shell builtin
+echo is /bin/echo
+```
+
+---
+
+## 3. source (.) vs execute (./)
+
+```bash
+# source (executes in CURRENT shell)
+source script.sh    # OR . script.sh
+# Variables, functions defined in script available after
+
+# execute (spawns NEW shell)
+./script.sh
+# Script runs in subshell; variables lost after exit
+```
+
+**Example:**
+```bash
+# script.sh
+export MY_VAR="hello"
+MY_FUNC() { echo "test"; }
+
+# Sourcing
+$ source script.sh
+$ echo $MY_VAR          # hello (available)
+$ MY_FUNC               # test (available)
+
+# Executing
+$ bash script.sh
+$ echo $MY_VAR          # (empty - lost)
+$ MY_FUNC               # command not found
+```
+
+---
+
+Class 2.6.2:
+	Title: Advanced Variables & Parameter Expansion
+	Description: Environment variables, scoping, and argument handling.
+Content Type: text
+Duration: 500 
+Order: 2
+		Text Content :
+ # Variables & Scoping
+
+## 1. export and Environment Variable Scope
+
+```bash
+MY_VAR="value"              # Local variable (shell only)
+export MY_VAR="value"       # Environment variable (passed to children)
+```
+
+**One-Way Street (Parent → Child):**
+```bash
+# parent_shell.sh
+export PARENT_VAR="from_parent"
+
+bash child_shell.sh
+# Inside child:
+echo $PARENT_VAR  # "from_parent" (inherited)
+
+# If child modifies:
+PARENT_VAR="modified"
+exit
+
+# Back in parent:
+echo $PARENT_VAR  # Still "from_parent" (unchanged!)
+```
+
+**Why Can't Children Modify Parent Environment?**
+Each process has its own memory space. Child inherits a *copy* of parent's environment, not a reference.
+
+---
+
+## 2. Special Variables: $* vs $@
+
+These differ significantly when quoted:
+
+```bash
+# script.sh
+echo "With \$*:"
+for arg in $*; do
+  echo "  $arg"
+done
+
+echo "With \$@:"
+for arg in "$@"; do
+  echo "  $arg"
+done
+```
+
+**Execution:**
+```bash
+$ ./script.sh "arg 1" "arg 2"
+
+With $*:
+  arg
+  1
+  arg
+  2
+
+With $@:
+  arg 1
+  arg 2
+```
+
+**Why This Matters:**
+```bash
+# WRONG: Loses argument boundaries
+function backup() {
+  tar -czf backup.tar.gz $*  # If arg has spaces, breaks!
+}
+
+# RIGHT: Preserves arguments
+function backup() {
+  tar -czf backup.tar.gz "$@"  # Correctly handles spaces
+}
+```
+
+---
+
+## 3. Other Special Variables
+
+```bash
+$$      # Current shell PID
+$!      # PID of last background job
+$?      # Exit code of last command
+$#      # Number of positional arguments
+$0      # Script name
+$1..$9  # Positional arguments
+```
+
+---
+
+## 4. Command Substitution
+
+```bash
+# Old way (backticks) - limited nesting
+current_date=`date`
+
+# Modern way (preferred) - supports nesting
+current_date=$(date)
+nested=$(echo $(date))
+```
+
+---
+
+Class 2.6.3:
+	Title: Advanced Conditionals
+	Description: Test operators, pattern matching, and regex.
+Content Type: text
+Duration: 450 
+Order: 3
+		Text Content :
+ # Conditional Statements Deep Dive
+
+## 1. [ ] vs [[ ]]
+
+### [ ] (POSIX test)
+- POSIX compliant (portable to sh, dash, etc.)
+- Performs word splitting on variables
+- No pattern matching or regex
+
+```bash
+if [ $file = "test.txt" ]; then
+  echo "Match"
+fi
+```
+
+**Problem:**
+```bash
+file="test file.txt"
+if [ $file = "test file.txt" ]; then  # ERROR: unary operator expected
+```
+Because `$file` expands to two arguments!
+
+### [[ ]] (Bash extended test)
+- Bash-only (not POSIX)
+- NO word splitting
+- Supports pattern matching and regex
+- SAFER for variable handling
+
+```bash
+file="test file.txt"
+if [[ $file = "test file.txt" ]]; then  # WORKS!
+  echo "Match"
+fi
+```
+
+---
+
+## 2. Pattern Matching
+
+```bash
+if [[ $filename == *.log ]]; then
+  echo "Log file"
+fi
+
+if [[ $name =~ ^[A-Z] ]]; then
+  echo "Starts with uppercase"
+fi
+```
+
+---
+
+## 3. Logical Operators
+
+```bash
+# Old POSIX way
+if [ $x -gt 5 -a $y -lt 10 ]; then  # -a = AND
+  
+if [ $x -gt 5 -o $y -lt 10 ]; then  # -o = OR
+
+# Modern way (cleaner)
+if [[ $x -gt 5 && $y -lt 10 ]]; then
+
+if [[ $x -gt 5 || $y -lt 10 ]]; then
+```
+
+---
+
+Class 2.6.4:
+	Title: Arrays & Associative Arrays
+	Description: Indexed arrays and key-value pairs.
+Content Type: text
+Duration: 400 
+Order: 4
+		Text Content :
+ # Arrays in Bash
+
+## 1. Indexed Arrays
+
+```bash
+# Create array
+declare -a fruits=("apple" "banana" "orange")
+
+# OR
+fruits[0]="apple"
+fruits[1]="banana"
+
+# Access single element
+echo ${fruits[0]}  # apple
+
+# All elements
+echo ${fruits[@]}  # apple banana orange
+
+# Array length
+echo ${#fruits[@]}  # 3
+
+# Iterate
+for fruit in "${fruits[@]}"; do
+  echo $fruit
+done
+```
+
+---
+
+## 2. Associative Arrays (Bash 4.0+)
+
+```bash
+declare -A config
+
+config["database"]="postgres"
+config["port"]="5432"
+config["user"]="admin"
+
+# Access
+echo ${config["database"]}  # postgres
+
+# All keys
+echo ${!config[@]}  # database port user
+
+# Iterate
+for key in "${!config[@]}"; do
+  echo "$key: ${config[$key]}"
+done
+```
+
+**Real-World Example:**
+```bash
+declare -A services
+services["nginx"]="80"
+services["postgres"]="5432"
+services["redis"]="6379"
+
+for service in "${!services[@]}"; do
+  port=${services[$service]}
+  echo "Checking if $service is running on port $port"
+done
+```
+
+---
+
+Class 2.6.5:
+	Title: Advanced I/O & File Descriptors
+	Description: Streams, redirections, and inter-process communication.
+Content Type: text
+Duration: 500 
+Order: 5
+		Text Content :
+ # File Descriptors & I/O Redirection
+
+## 1. File Descriptors (0, 1, 2)
+
+Every process has three standard file descriptors:
+```
+0 = stdin  (standard input)
+1 = stdout (standard output)
+2 = stderr (standard error)
+```
+
+---
+
+## 2. Redirection Order Matters!
+
+```bash
+# CORRECT: Redirect stderr to where stdout is going
+command > file.log 2>&1
+# First > file.log (redirect stdout)
+# Then 2>&1 (redirect stderr to stdout's destination)
+
+# WRONG: Does something different
+command 2>&1 > file.log
+# First 2>&1 (stderr to stdout, currently pointing to terminal)
+# Then > file.log (stdout to file, but stderr still points to terminal)
+```
+
+---
+
+## 3. Common I/O Patterns
+
+```bash
+# Suppress all output
+command > /dev/null 2>&1
+
+# Capture stderr separately
+command 2> errors.log > output.log
+
+# Append instead of overwrite
+command >> file.log 2>&1
+
+# Discard stderr, keep stdout
+command 2> /dev/null
+```
+
+---
+
+## 4. Here Documents & Here Strings
+
+**Here Document (<<):**
+```bash
+cat << EOF
+This is a here document
+Variables expanded: $HOME
+EOF
+
+cat << 'EOF'  # Single quotes = no expansion
+$HOME not expanded
+EOF
+```
+
+**Here String (<<<):**
+```bash
+# Simpler than here document for single input
+grep "pattern" <<< "some input string"
+
+while read line; do
+  echo "Line: $line"
+done <<< "multi
+line
+input"
+```
+
+---
+
+## 5. Reading Files Properly
+
+**WRONG:**
+```bash
+cat file.log | while read line; do
+  count=$((count + 1))  # Lost! Subshell doesn't update parent
+done
+echo $count  # Empty!
+```
+
+**RIGHT:**
+```bash
+while IFS= read -r line; do
+  count=$((count + 1))
+done < file.log
+echo $count  # Works!
+```
+
+**Why?** `cat file | while` creates a subshell; `< file` redirects in current shell.
+
+---
+
+Class 2.6.6:
+	Title: Error Handling & Exit Codes
+	Description: Exit codes, strict mode, and signal handling.
+Content Type: text
+Duration: 500 
+Order: 6
+		Text Content :
+ # Error Handling in Shell Scripts
+
+## 1. Exit Codes
+
+Every command returns an exit code (0 = success, non-zero = failure).
+
+```bash
+$ ls /tmp
+$ echo $?        # 0 (success)
+
+$ ls /nonexistent
+$ echo $?        # 2 (failure)
+```
+
+---
+
+## 2. Strict Mode
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# -e (errexit): Exit on first error
+# -u (nounset): Error on undefined variables
+# -o pipefail: Fail if any command in pipe fails
+```
+
+**Without strict mode:**
+```bash
+#!/bin/bash
+database=$DATABASE_URL  # If undefined, silently becomes empty
+connect_db              # Might hang or fail silently
+rm -rf /important/*     # Dangerous if vars are empty!
+```
+
+**With strict mode:**
+```bash
+#!/bin/bash
+set -euo pipefail
+database=$DATABASE_URL  # Errors: DATABASE_URL is undefined
+```
+
+---
+
+## 3. When set -e Does NOT Exit
+
+```bash
+set -e
+
+# Does NOT exit (conditional context)
+if false; then
+  echo "not printed"
+fi
+
+# Does NOT exit (|| operator)
+false || echo "handled"
+
+# Does NOT exit (&& operator - tricky!)
+false && echo "not printed"
+```
+
+---
+
+## 4. Signal Handling with trap
+
+```bash
+#!/bin/bash
+
+# Cleanup on ANY exit
+trap "rm -f $tempfile" EXIT
+
+# Handle Ctrl+C
+trap "echo 'Interrupted!'; exit 130" INT
+
+# Handle SIGTERM
+trap "graceful_shutdown" TERM
+
+tempfile=$(mktemp)
+# If script exits (for any reason), tempfile is cleaned up
+```
+
+---
+
+Class 2.6.7:
+	Title: Script Debugging & Validation
+	Description: Syntax checking and execution tracing.
+Content Type: text
+Duration: 350 
+Order: 7
+		Text Content :
+ # Debugging Shell Scripts
+
+## 1. Syntax Checking
+
+```bash
+bash -n script.sh  # Check syntax without running
+bash -x script.sh  # Run with execution tracing
+```
+
+**Partial Tracing:**
+```bash
+#!/bin/bash
+# ... code ...
+
+set -x  # Start tracing
+command1
+command2
+
+set +x  # Stop tracing
+command3  # Not traced
+```
+
+---
+
+## 2. Custom Trace Prompts
+
+```bash
+export PS4='[${BASH_SOURCE}:${LINENO}] ${FUNCNAME[0]}() '
+bash -x script.sh
+
+# Output:
+# [script.sh:10] main() + echo "Starting"
+```
+
+---
+
+## 3. ShellCheck
+
+```bash
+shellcheck script.sh  # Lint tool - catches common errors
+```
+
+**Common Issues:**
+- Unquoted variables: `$file` should be `"$file"`
+- Undefined variables
+- Using single brackets when [[ ]] is safer
+
+---
+
+Topic 2.7:
+Title: Package Management Deep Dive
+Order: 7
+
+Class 2.7.1:
+	Title: Debian/Ubuntu Package Management
+	Description: apt, dpkg, and repository management.
+Content Type: text
+Duration: 550 
+Order: 1
+		Text Content :
+ # Debian/Ubuntu Package Management
+
+## 1. apt vs apt-get vs apt-cache
+
+**apt** (Modern)
+- User-friendly wrapper
+- Combines apt-get, apt-cache functionality
+- Recommended for new scripts
+
+**apt-get** (Traditional)
+- Lower-level, stable API
+- Good for automated scripts (less output changes)
+
+**apt-cache** (Query tool)
+- Search and show package information
+
+---
+
+## 2. Package Management Lifecycle
+
+```bash
+apt update              # Fetch package lists from repositories
+apt upgrade             # Upgrade installed packages (keep dependencies)
+apt full-upgrade        # Upgrade all packages (may remove packages)
+apt dist-upgrade        # (Older term, now full-upgrade)
+```
+
+---
+
+## 3. Install, Remove, Purge
+
+```bash
+apt install nginx              # Install package
+apt remove nginx               # Remove (keep config files)
+apt purge nginx                # Remove including config
+apt autoremove                 # Remove unused dependencies
+apt clean                      # Remove cached .deb files
+apt autoclean                  # Remove outdated cached .deb
+```
+
+---
+
+## 4. dpkg: Low-Level Operations
+
+```bash
+dpkg -l                        # List installed packages
+dpkg -i package.deb            # Install .deb file
+dpkg -r nginx                  # Remove package
+dpkg -L nginx                  # List files in package
+dpkg -S /usr/sbin/nginx        # Find which package owns file
+```
+
+---
+
+## 5. Repository Management
+
+```bash
+cat /etc/apt/sources.list      # View repositories
+ls /etc/apt/sources.list.d/    # Additional repos
+
+# Adding PPA (Personal Package Archive)
+add-apt-repository ppa:user/ppa-name
+
+# View available versions
+apt-cache policy nginx
+
+# Hold package at specific version
+apt-mark hold nginx
+apt-mark unhold nginx
+```
+
+---
+
+Class 2.7.2:
+	Title: RHEL/CentOS Package Management
+	Description: yum, dnf, and rpm operations.
+Content Type: text
+Duration: 550 
+Order: 2
+		Text Content :
+ # RHEL/CentOS Package Management
+
+## 1. yum vs dnf
+
+**yum** (Older, still used)
+- Yellowdog Updater Modified
+- Slower, Python-based
+
+**dnf** (New standard)
+- Dandified YUM
+- Faster, better dependency resolution
+- Default in RHEL 8+
+
+---
+
+## 2. Basic Operations
+
+```bash
+dnf install nginx              # Install
+dnf remove nginx               # Remove
+dnf update                     # Update packages
+dnf autoremove                 # Remove unused dependencies
+dnf clean all                  # Clean cache
+```
+
+---
+
+## 3. rpm: Low-Level Operations
+
+```bash
+rpm -qa                        # List all packages
+rpm -ivh package.rpm           # Install (verbose, progress)
+rpm -e nginx                   # Erase/remove
+rpm -ql nginx                  # List files in package
+rpm -qf /usr/sbin/nginx        # Find package owning file
+```
+
+---
+
+## 4. Repository Management
+
+```bash
+ls /etc/yum.repos.d/           # Repository configs
+cat /etc/yum.repos.d/rhel.repo
+
+dnf config-manager --enable rhel-optional
+dnf config-manager --disable rhel-optional
+
+dnf search nginx               # Search packages
+dnf info nginx                 # Show package details
+dnf groups list                # List package groups
+```
+
+---
+
+## 5. History & Rollback
+
+```bash
+dnf history                    # Transaction history
+dnf history info 5             # Details of transaction 5
+dnf history undo 5             # Rollback transaction 5
+```
+
+---
+
+Topic 2.8:
+Title: Task Scheduling & Automation
+Order: 8
+
+Class 2.8.1:
+	Title: Cron & Scheduled Tasks
+	Description: Cron syntax, configuration, and debugging.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Cron: The Scheduler
+
+## 1. Cron Time Format
+
+```
+┌───────────── minute (0 - 59)
+│ ┌───────────── hour (0 - 23)
+│ │ ┌───────────── day of month (1 - 31)
+│ │ │ ┌───────────── month (1 - 12)
+│ │ │ │ ┌───────────── day of week (0 - 7) [0 and 7 are Sunday]
+│ │ │ │ │
+│ │ │ │ │
+* * * * * command_to_run
+```
+
+**Examples:**
+```bash
+0 2 * * *       # Daily at 2:00 AM
+0 */6 * * *     # Every 6 hours
+0 9 * * 1       # Mondays at 9:00 AM
+0 0 1 * *       # First day of month at midnight
+*/5 * * * *     # Every 5 minutes
+```
+
+---
+
+## 2. Special Shorthand
+
+```bash
+@reboot         # At system startup
+@yearly         # January 1 at midnight
+@monthly        # First day of month at midnight
+@weekly         # Sundays at midnight
+@daily          # Daily at midnight
+@hourly         # Every hour at :00
+@midnight       # Midnight (same as @daily)
+```
+
+---
+
+## 3. User vs System Crontab
+
+**User crontab:**
+```bash
+crontab -e              # Edit current user's crontab
+crontab -l              # List current user's crontab
+crontab -u username -e  # Edit other user's crontab
+crontab -r              # Remove current user's crontab
+```
+
+**System crontab:**
+```bash
+/etc/crontab            # System-wide (includes USER field)
+/etc/cron.d/            # Modular cron configs
+/etc/cron.{hourly,daily,weekly,monthly}/  # Drop scripts here
+```
+
+---
+
+## 4. Common Cron Issues
+
+**PATH Problems:**
+```bash
+# WRONG: Script not found because PATH is minimal in cron
+0 2 * * * backup.sh
+
+# RIGHT: Use absolute path
+0 2 * * * /usr/local/bin/backup.sh
+```
+
+**Output & Notifications:**
+```bash
+# Set MAILTO for email notifications
+MAILTO=admin@example.com
+
+# Redirect output to file (append)
+0 2 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+```
+
+**Preventing Overlapping Runs:**
+```bash
+0 * * * * flock -n /tmp/myjob.lock /usr/local/bin/job.sh || exit 0
+```
+
+---
+
+## 5. Logging Cron Execution
+
+```bash
+# Check cron logs
+sudo tail -f /var/log/cron              # RHEL/CentOS
+sudo tail -f /var/log/syslog            # Debian/Ubuntu
+
+# Or use journalctl
+sudo journalctl -u cron
+sudo journalctl SYSLOG_IDENTIFIER=CRON
+```
+
+---
+
+Class 2.8.2:
+	Title: Advanced Scheduling
+	Description: systemd timers, anacron, and at.
+Content Type: text
+Duration: 400 
+Order: 2
+		Text Content :
+ # Modern Scheduling Alternatives
+
+## 1. systemd Timers (Modern Replacement for Cron)
+
+**Advantages over cron:**
+- Better logging (journalctl)
+- More flexible scheduling
+- Integrated with systemd
+
+**Timer Unit:**
+```ini
+# /etc/systemd/system/backup.timer
+[Unit]
+Description=Daily Backup Timer
+Requires=backup.service
+
+[Timer]
+OnCalendar=daily
+OnCalendar=*-*-* 02:00:00  # Daily at 2 AM
+Persistent=true            # Catch up if system was off
+
+[Install]
+WantedBy=timers.target
+```
+
+**Service Unit:**
+```ini
+# /etc/systemd/system/backup.service
+[Unit]
+Description=Backup Service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup.sh
+```
+
+**Enable & Start:**
+```bash
+systemctl daemon-reload
+systemctl enable backup.timer
+systemctl start backup.timer
+systemctl list-timers          # View all timers
+```
+
+---
+
+## 2. anacron: For Non-24/7 Systems
+
+For systems that aren't always on (laptops, desktops).
+
+```bash
+# anacrontab structure
+1 5 cron.daily     run-parts --report /etc/cron.daily
+
+# Meaning:
+# 1 = delay in minutes after boot
+# 5 = period in days
+# cron.daily = job identifier
+# Command to run
+```
+
+---
+
+## 3. at: One-Time Job Scheduling
+
+```bash
+# Schedule a command to run once at 3 PM
+at 3:00 PM << EOF
+/usr/local/bin/backup.sh
+EOF
+
+atq                 # List scheduled at jobs
+atrm 1              # Remove at job #1
+```
+
+---
+
+Topic 2.9:
+Title: Advanced Storage & Filesystems
+Order: 9
+
+Class 2.9.1:
+	Title: Hard Links vs Soft Links & Inodes
+	Description: Understanding inode-based filesystem architecture.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Links and Inodes
+
+## 1. What is an Inode?
+
+An inode is a data structure that stores file metadata:
+```
+- Permissions (755)
+- Owner/Group
+- Size
+- Timestamps (access, modify, change)
+- Link count
+- Pointers to data blocks
+```
+
+**What it does NOT store:**
+- Filename!
+
+---
+
+## 2. Hard Links
+
+A hard link is **another name for the same inode**.
+
+```bash
+echo "original" > file1.txt
+ln file1.txt file2.txt     # Hard link to file1
+
+ls -i
+# 12345 file1.txt
+# 12345 file2.txt          # Same inode!
+
+# Both point to same data
+# Deleting one doesn't affect the other (until link count = 0)
+```
+
+**Limitations:**
+- Cannot hard link directories (prevents cycles)
+- Cannot cross filesystems
+
+---
+
+## 3. Soft Links (Symlinks)
+
+A soft link is **a pointer to a filename** (not inode).
+
+```bash
+ln -s file1.txt file3.txt  # Symlink to file1
+
+ls -i
+# 12345 file1.txt
+# 54321 file3.txt           # Different inode!
+# file3.txt -> file1.txt    # Symbolic pointer
+
+# If file1.txt is deleted, file3.txt becomes broken
+```
+
+**Advantages:**
+- Can link directories
+- Can cross filesystems
+- More flexible
+
+---
+
+## 4. Link Count
+
+```bash
+$ ls -l file1.txt
+-rw-r--r-- 2 user user 100 file1.txt
+                   ^
+                   link count = 2 (file1 + file2)
+
+# When link count = 0, inode is freed
+# rm decrements link count
+```
+
+---
+
+## 5. Finding Links
+
+```bash
+find . -samefile file1.txt      # Find all hard links
+find . -inum 12345               # Find by inode number
+find . -type l                   # Find all symlinks
+find . -type l -exec test ! -e {} \;  # Find broken symlinks
+```
+
+---
+
+Class 2.9.2:
+	Title: LVM (Logical Volume Manager)
+	Description: Creating and managing flexible storage.
+Content Type: text
+Duration: 450 
+Order: 2
+		Text Content :
+ # LVM: Flexible Storage Architecture
+
+## 1. LVM Hierarchy
+
+```
+Physical Volumes (PV)
+    ↓ grouped into
+Volume Groups (VG)
+    ↓ allocated to
+Logical Volumes (LV)
+    ↓ formatted with
+Filesystem (ext4, XFS)
+```
+
+---
+
+## 2. Physical Volumes
+
+```bash
+pvcreate /dev/sdb /dev/sdc     # Initialize PVs
+pvs                            # Quick list
+pvdisplay                      # Detailed view
+pvremove /dev/sdb              # Remove PV
+```
+
+---
+
+## 3. Volume Groups
+
+```bash
+vgcreate myvg /dev/sdb /dev/sdc    # Create VG from PVs
+vgextend myvg /dev/sdd             # Add PV to VG
+vgreduce myvg /dev/sdd             # Remove PV from VG
+vgs                                # Quick list
+vgdisplay                          # Detailed view
+```
+
+---
+
+## 4. Logical Volumes
+
+```bash
+lvcreate -L 10G -n mylv myvg       # Create 10GB LV
+lvs                                # Quick list
+lvdisplay                          # Detailed view
+
+# Extend LV
+lvextend -L +5G /dev/myvg/mylv
+
+# After extending LV, resize filesystem!
+resize2fs /dev/myvg/mylv           # ext4
+xfs_growfs /dev/myvg/mylv          # XFS
+```
+
+---
+
+## 5. LVM Snapshots
+
+```bash
+# Create snapshot (useful for backups)
+lvcreate -L 1G -s -n mylv_snap /dev/myvg/mylv
+
+# Backup snapshot without disturbing live data
+tar -czf backup.tar.gz /mnt/snapshot/
+
+# Remove snapshot
+lvremove /dev/myvg/mylv_snap
+```
+
+---
+
+Topic 2.10:
+Title: Advanced Process Management & Performance
+Order: 10
+
+Class 2.10.1:
+	Title: Process Priority & Nice Values
+	Description: CPU scheduling and process priority.
+Content Type: text
+Duration: 400 
+Order: 1
+		Text Content :
+ # Process Scheduling & Priority
+
+## 1. Nice and Renice
+
+Priority range: **-20 (highest) to +19 (lowest)**
+
+```bash
+nice -n 10 heavy_computation.sh    # Start with priority 10
+renice -n 5 -p 1234                # Change running process
+
+ps -o pid,ni,cmd ax
+# Shows current nice values
+```
+
+**Rule:**
+- Only root can set negative nice (high priority)
+- Regular users can only lower priority (increase nice value)
+
+---
+
+## 2. Real-Time Priorities
+
+For low-latency tasks (audio, trading, video).
+
+```bash
+chrt -p 50 1234                    # Set real-time priority 50
+chrt -p 1234                       # Show priority
+```
+
+---
+
+Class 2.10.2:
+	Title: Background Jobs & Job Control
+	Description: Foreground, background, and terminal sessions.
+Content Type: text
+Duration: 400 
+Order: 2
+		Text Content :
+ # Job Control
+
+## 1. Running Commands in Background
+
+```bash
+command &                          # Start in background
+jobs                               # List background jobs
+fg %1                              # Bring job 1 to foreground
+bg %1                              # Resume job 1 in background
+
+Ctrl+Z                             # Suspend foreground job
+Ctrl+C                             # Terminate foreground job
+```
+
+---
+
+## 2. Detaching from Terminal
+
+**nohup:**
+```bash
+nohup long_script.sh &
+# Immune to SIGHUP when terminal closes
+# Output goes to nohup.out
+```
+
+**disown:**
+```bash
+$ long_script.sh &
+[1] 5432
+$ disown %1
+# Job continues if terminal closes
+```
+
+---
+
+## 3. When Jobs Terminate
+
+Without `nohup` or `disown`, background jobs receive SIGHUP when terminal closes.
+
+---
+
+Class 2.10.3:
+	Title: Process Relationships & Monitoring
+	Description: Parent/child processes and tree visualization.
+Content Type: text
+Duration: 350 
+Order: 3
+		Text Content :
+ # Process Relationships
+
+## 1. Parent and Child Processes
+
+```bash
+ps -ef
+# UID   PID  PPID  CMD
+# root   1    0    /sbin/init
+# root  100   1    /usr/sbin/sshd
+# user  500  100   sshd
+# user  501  500   bash
+
+# 501 (bash) is child of 500 (sshd)
+```
+
+**Viewing Process Trees:**
+```bash
+pstree                             # Tree view of all processes
+pstree -p 500                      # Show children of PID 500
+pstree -u                          # Show users
+```
+
+---
+
+## 2. Orphaned Processes
+
+If parent dies, child is adopted by init (PID 1).
+
+```bash
+# Start long-running child
+$ ./script.sh &
+[1] 5432
+
+# Parent (bash) exits
+$ exit
+
+# Child continues, now PPID = 1 (init/systemd)
+```
+
+---
+
+Topic 2.11:
+Title: Advanced Signal Handling
+Order: 11
+
+Class 2.11.1:
+	Title: Signals Deep Dive
+	Description: Complete signal list and real-world handling.
+Content Type: text
+Duration: 400 
+Order: 1
+		Text Content :
+ # Signal Handling
+
+## 1. Common Signals
+
+```bash
+kill -l                            # List all signals
+
+SIGHUP (1)     Hangup / reload config (terminal closed)
+SIGINT (2)     Interrupt (Ctrl+C)
+SIGQUIT (3)    Quit with core dump (Ctrl+\)
+SIGKILL (9)    Kill (cannot be caught or ignored)
+SIGTERM (15)   Termination (graceful)
+SIGSTOP (19)   Stop (cannot be caught)
+SIGCONT (18)   Continue
+```
+
+---
+
+## 2. Sending Signals
+
+```bash
+kill -TERM 1234                    # Send SIGTERM
+kill -9 1234                       # Send SIGKILL (last resort)
+kill -HUP 1234                     # Send SIGHUP (reload)
+killall -TERM nginx                # Kill all nginx processes
+```
+
+---
+
+## 3. Real-World Example: Nginx Reload
+
+```bash
+# Nginx master process gracefully reloads config on SIGHUP
+kill -HUP $(cat /var/run/nginx.pid)
+
+# Or use nginx command
+nginx -s reload
+```
+
+---
+
+Topic 2.12:
+Title: Advanced System Analysis & Performance
+Order: 12
+
+Class 2.12.1:
+	Title: Performance Monitoring Deep Dive
+	Description: vmstat, mpstat, memory analysis, and load.
+Content Type: text
+Duration: 450 
+Order: 1
+		Text Content :
+ # System Performance Monitoring
+
+## 1. vmstat: Virtual Memory Statistics
+
+```bash
+vmstat 1                           # Update every 1 second
+# r  b  swpd  free  buff  cache  si  so  bi  bo  in  cs us sy id wa
+# 2  0  0     4096  512   8192   0   0   1   2   100 50  60 10 20 10
+```
+
+**Understanding the columns:**
+- `r`: Runnable processes (waiting for CPU)
+- `b`: Blocked processes (I/O wait)
+- `si`: Swap in (memory → disk) [BAD]
+- `so`: Swap out (disk → memory) [BAD]
+- `wa`: Wait I/O (percentage CPU idle waiting for disk)
+
+---
+
+## 2. Load Average
+
+```bash
+uptime
+# 16:42:15 up 10 days,  2:15,  2 users,  load average: 1.50, 0.80, 0.60
+# Meaning: 1.50 (1min), 0.80 (5min), 0.60 (15min)
+```
+
+**Interpretation:**
+```
+If system has 4 CPU cores:
+- Load 1.0-2.0: Busy but okay
+- Load 2.0-4.0: Working near capacity
+- Load > 4.0: Overloaded (queue building)
+
+If load > cores, you have saturation!
+```
+
+---
+
+## 3. Memory: Free vs Available vs Cached
+
+```bash
+free -h
+# total  used  free  shared  buffers  cached  available
+```
+
+**Key distinction:**
+- `free`: Completely unused
+- `cached`: Dirty pages (can be reclaimed if needed)
+- `available`: Free + cached (what apps can actually use)
+
+---
+
+## 4. Finding Memory Hogs
+
+```bash
+ps aux --sort -%mem | head -10      # Top 10 by memory
+smem                                # Accurate memory usage
+```
+
+---
+
+Topic 2.13:
+Title: Advanced Logging & System Information
+Order: 13
+
+Class 2.13.1:
+	Title: Journalctl & System Logging
+	Description: Structured logging with systemd.
+Content Type: text
+Duration: 450 
+Order: 1
+		Text Content :
+ # systemd Journal & Logging
+
+## 1. journalctl Basics
+
+```bash
+journalctl                         # All logs (paginated)
+journalctl -f                      # Follow mode (live tail)
+journalctl -n 50                   # Last 50 lines
+journalctl --no-pager              # Don't paginate
+```
+
+---
+
+## 2. Filtering Logs
+
+```bash
+journalctl -u nginx                # Only nginx service
+journalctl -u nginx -f             # Follow nginx logs
+
+journalctl --since "2 hours ago"   # Time range
+journalctl --until "1 hour ago"
+
+journalctl -p err                  # Only errors
+journalctl -p warning              # Warnings and above
+
+journalctl -b                      # Current boot
+journalctl -b -1                   # Previous boot
+
+journalctl -k                      # Kernel messages only
+journalctl -xe                     # Recent + explanations
+```
+
+---
+
+## 3. Persistent Journal Storage
+
+By default, journalctl stores logs in `/run/log/journal` (lost on reboot).
+
+```bash
+# Enable persistent storage
+sudo mkdir -p /var/log/journal
+sudo chown root:systemd-journal /var/log/journal
+sudo chmod 2755 /var/log/journal
+sudo systemctl restart systemd-journald
+```
+
+---
+
+Class 2.13.2:
+	Title: Authentication & Access Logs
+	Description: User login tracking and security auditing.
+Content Type: text
+Duration: 350 
+Order: 2
+		Text Content :
+ # User Authentication Logging
+
+## 1. Recent Logins
+
+```bash
+last                               # Recent successful logins
+lastb                              # Failed login attempts
+who                                # Currently logged in
+w                                  # Current users + what they're doing
+```
+
+---
+
+## 2. Failed Login Analysis
+
+```bash
+grep "Failed password" /var/log/auth.log | wc -l
+# Count failed SSH attempts
+
+tail -f /var/log/auth.log | grep "Failed"
+# Monitor in real-time
+```
+
+---
+
+## 3. fail2ban for Brute Force Protection
+
+```bash
+fail2ban-client status              # View status
+fail2ban-client status sshd         # Banned IPs for SSH
+```
+
+---
+
+Class 2.13.3:
+	Title: System Information Commands
+	Description: Kernel, distribution, and hardware info.
+Content Type: text
+Duration: 350 
+Order: 3
+		Text Content :
+ # System Information
+
+## 1. Basic System Info
+
+```bash
+uname -a                           # Kernel info
+lsb_release -a                     # Distribution info
+hostnamectl                        # Hostname + OS details
+uptime                             # Uptime and load average
+```
+
+---
+
+## 2. Kernel Information
+
+```bash
+dmesg | tail -50                   # Recent kernel messages
+uname -r                           # Kernel version
+cat /proc/version                  # Kernel version (detailed)
+```
+
+---
+
+## 3. /proc Filesystem Exploration
+
+```bash
+cat /proc/cpuinfo                  # CPU information
+cat /proc/meminfo                  # Memory information
+cat /proc/loadavg                  # Load average
+cat /proc/sys/kernel/hostname      # Hostname
+
+# Process-specific info
+cat /proc/1234/status              # PID 1234 details
+cat /proc/1234/maps                # Memory map
+cat /proc/1234/fd                  # Open file descriptors
+```
+
+---
+
 Module 3:
 Title: Cloud Infrastructure & Services
 Description: Master cloud platforms (AWS, GCP, Azure) with focus on compute, networking, storage, and managed services. Learn to design scalable, resilient, and cost-effective cloud architectures.
