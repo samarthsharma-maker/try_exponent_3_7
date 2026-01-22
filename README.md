@@ -6297,7 +6297,7 @@ Class 5.1.1:
 	Title: CI/CD Concepts & Best Practices
 	Description: Understanding the pipeline, version control strategies, and DORA metrics.
 Content Type: text
-Duration: 400 
+Duration: 500 
 Order: 1
 		Text Content :
  # CI/CD: The Engine of DevOps
@@ -6307,26 +6307,508 @@ In an interview, do not just expand the acronym. Explain the **workflow**.
 
 * **Continuous Integration (CI):** Developers merge code into a shared repository frequently (multiple times a day). Each merge triggers an automated build and test sequence.
     * *Goal:* Detect bugs early ("Fail Fast").
+    * **Real impact:** A bug caught in CI takes minutes to fix. The same bug in production takes hours to debug, deploy, and recover from.
 * **Continuous Delivery (CD):** The code is built, tested, and ready to release to production at any time. The final deployment to production is a **manual decision** (click a button).
+    * **Human gate:** A person decides "Yes, ship it"
+    * Reduces risk by introducing a decision point
 * **Continuous Deployment (CD):** Every change that passes the automated tests is deployed to production **automatically**. No human intervention.
     * *Risk:* Requires extremely robust automated testing.
+    * *Benefit:* Fastest feedback loop. Users see changes in minutes.
 
 ---
 
-## 2. Version Control Strategies
-Your pipeline strategy depends on your branching strategy.
-* **Git Flow:** Two long-lived branches (`master` and `develop`). Safe but slow. Can lead to "Merge Hell."
-* **Trunk-Based Development:** Everyone pushes to `main` (Trunk) daily. Short-lived feature branches.
-    * *The DevOps Standard:* High-performing teams use Trunk-Based Development combined with **Feature Flags**.
+## 2. The CI/CD Pipeline Flow
+
+```
+Developer commits code
+        ↓
+Webhook triggers CI/CD
+        ↓
+┌─────────────────────────────┐
+│ Continuous Integration (CI) │
+├─────────────────────────────┤
+│ 1. Checkout code            │
+│ 2. Build artifact           │
+│ 3. Run unit tests           │
+│ 4. Static code analysis     │
+│ 5. Security scanning        │
+└────────┬────────────────────┘
+         ↓
+    Tests pass?
+    ├─ NO → Notify dev, stop
+    └─ YES ↓
+┌─────────────────────────────┐
+│ Continuous Delivery (CD)    │
+├─────────────────────────────┤
+│ 1. Deploy to staging        │
+│ 2. Run integration tests    │
+│ 3. Run E2E tests            │
+│ 4. Performance tests        │
+└────────┬────────────────────┘
+         ↓
+    Ready for prod?
+    ├─ NO → Halt, wait for manual approval
+    └─ YES (Manual gate or auto) ↓
+┌─────────────────────────────┐
+│ Continuous Deployment       │
+├─────────────────────────────┤
+│ 1. Deploy to production     │
+│ 2. Health checks            │
+│ 3. Smoke tests              │
+│ 4. Monitor metrics          │
+└─────────────────────────────┘
+        ↓
+Users see the change
+```
 
 ---
 
-## 3. Key Metrics (DORA Metrics)
-Google's DORA research defined the 4 metrics that matter. Memorize these.
-1.  **Deployment Frequency:** How often do you ship? (Elite = On-demand/Multiple times per day).
-2.  **Lead Time for Changes:** How long from "Commit" to "Running in Production"?
-3.  **Change Failure Rate:** What percentage of deployments break production?
-4.  **MTTR (Mean Time to Recovery):** When production breaks, how fast can you fix it?
+## 3. Version Control Strategies
+
+Your pipeline strategy depends on your branching strategy. This choice directly impacts deployment frequency and risk.
+
+### Git Flow (Safe but Slow)
+
+```
+main (production) ← releases only
+   ↑
+develop (staging)
+   ↑
+feature/xxx (developer)
+   ↑
+hotfix/xxx (emergency fixes)
+```
+
+**Characteristics:**
+- Two long-lived branches: `main` and `develop`
+- Feature branches live for days/weeks
+- Multiple merge steps before production
+- Explicit versioning
+
+**Pros:**
+- Clear separation of concerns
+- Safe for large teams
+- Release planning is visible
+
+**Cons:**
+- Slow lead time (days to production)
+- Merge conflicts are common
+- Not suitable for high-frequency deployments
+
+**Best for:** Large enterprises with strict release gates
+
+---
+
+### Trunk-Based Development (Fast and Lean)
+
+```
+main (production + staging)
+ ↑ ↑ ↑ ↑ ↑ ↑
+↓ ↓ ↓ ↓ ↓ ↓ (feature branches, live ≤ 1 day)
+feature/xxx (many developers)
+```
+
+**Characteristics:**
+- Single long-lived branch: `main`
+- Feature branches are **short-lived** (hours to a day)
+- Frequent merges (multiple per day)
+- Relies on **feature flags** to control rollout
+
+**Pros:**
+- Low merge conflict risk
+- Fast lead time (minutes to production)
+- Enables continuous deployment
+- Scales with large teams
+
+**Cons:**
+- Requires robust automated testing
+- Feature flags add complexity
+- Main branch must always be releasable
+
+**Feature Flags in Action:**
+```python
+# Feature flag library
+if is_feature_enabled('new_checkout'):
+    # Use new checkout flow
+    return new_checkout()
+else:
+    # Use old checkout flow
+    return old_checkout()
+```
+
+**The DevOps Gold Standard:**
+High-performing DevOps teams use **Trunk-Based Development + Feature Flags + Continuous Deployment**.
+
+---
+
+## 4. Key Metrics (DORA Metrics)
+
+Google's DORA (DevOps Research and Assessment) research identified 4 metrics that predict organizational performance. These are **interview gold**.
+
+### The Four Key Metrics
+
+#### 1. Deployment Frequency
+**Question:** How often do you deploy to production?
+
+```
+Elite performers:   On-demand (multiple per day, per hour)
+High performers:    Weekly
+Medium performers:  Monthly
+Low performers:     Quarterly
+```
+
+**Why it matters:**
+- Fast deployments = quick feedback loops
+- Users see features sooner
+- Recovery from failures is faster
+
+**Interview Q:** "What's your current deployment frequency?"
+
+---
+
+#### 2. Lead Time for Changes
+**Question:** How long from commit to production?
+
+```
+Elite performers:   < 1 hour
+High performers:    < 1 day
+Medium performers:  < 1 week
+Low performers:     > 1 month
+```
+
+**Calculation:**
+```
+Lead Time = (Time code merged) to (Time in production)
+```
+
+**Why it matters:**
+- Shorter lead time = faster innovation
+- Quicker response to production issues
+- Feedback to developers is immediate
+
+---
+
+#### 3. Change Failure Rate
+**Question:** What percentage of deployments cause production incidents?
+
+```
+Elite performers:   0-15%
+High performers:    15-45%
+Medium performers:  45-60%
+Low performers:     > 60%
+```
+
+**Formula:**
+```
+CFR = (Failed deployments) / (Total deployments) × 100%
+```
+
+**Example:**
+- Deployed 100 times this month
+- 5 caused incidents
+- CFR = 5%
+
+**Why it matters:**
+- Indicates testing quality
+- Reveals risk management effectiveness
+- Lower CFR = safer deployments
+
+---
+
+#### 4. Mean Time to Recovery (MTTR)
+**Question:** When production breaks, how fast can you fix it?
+
+```
+Elite performers:   < 1 hour
+High performers:    < 1 day
+Medium performers:  < 1 week
+Low performers:     > 1 month
+```
+
+**MTTR Calculation:**
+```
+MTTR = (Detection time) + (Remediation time)
+```
+
+**Example Incident:**
+- Bug discovered at 10:00 AM
+- Fixed and deployed at 10:45 AM
+- MTTR = 45 minutes
+
+**Why it matters:**
+- Incidents are inevitable
+- Recovery speed minimizes user impact
+- Enables safer, faster deployments
+
+---
+
+## 5. Relationship Between Metrics
+
+```
+High Deployment Frequency
+        ↓
+More chances to catch bugs
+        ↓
+Lower Change Failure Rate
+        ↓
+Faster MTTR (each change is smaller)
+        ↓
+More deployments possible
+        ↓
+Positive feedback loop!
+```
+
+**Counterintuitive truth:**
+Deploying *more often* with smaller changes is *safer* than deploying infrequently with large changes.
+
+---
+
+Class 5.1.2:
+	Title: Pipeline Design and Best Practices
+	Description: Building reliable, fast, and secure pipelines.
+Content Type: text
+Duration: 450 
+Order: 2
+		Text Content :
+ # Designing Production-Grade Pipelines
+
+## 1. Pipeline Stages
+
+A well-designed pipeline has clear stages, each with a specific purpose.
+
+### Stage 1: Build (Minutes)
+
+```bash
+# Compile source code
+# Run syntax checks
+# Create artifact (binary, JAR, Docker image)
+```
+
+**Gate:** Compilation succeeds, artifact is created
+
+**Failure Handling:** Notify developer immediately
+
+---
+
+### Stage 2: Unit Tests (5-10 minutes)
+
+```bash
+# Run fast, isolated unit tests
+# No external dependencies (mock databases)
+# Tests in parallel to save time
+```
+
+**Acceptance Criteria:**
+- Coverage > 80%
+- All tests pass
+- No flaky tests
+
+**Pro Tip:** If a unit test takes > 1 second, it's not really a unit test.
+
+---
+
+### Stage 3: Static Analysis (5-10 minutes)
+
+```bash
+# SAST: Scan source code for vulnerabilities
+# Linting: Check code style (eslint, pylint)
+# Complexity analysis: Cyclomatic complexity
+# Dependency scanning: Known CVEs in libraries
+```
+
+**Tools:**
+- SonarQube (comprehensive)
+- Semgrep (fast, rules-based)
+- Snyk (dependency scanning)
+
+**Gate:** No critical/high-severity issues
+
+---
+
+### Stage 4: Build Artifact (5-15 minutes)
+
+```bash
+# Create docker image / JAR / binary
+# Tag with commit SHA
+# Push to artifact repository (Docker Hub, Artifactory)
+```
+
+**Best Practice:** Tag with both commit SHA and branch name
+
+```bash
+docker build -t myapp:sha-abc123 .
+docker build -t myapp:main .
+docker push myapp:sha-abc123
+docker push myapp:main
+```
+
+---
+
+### Stage 5: Deploy to Staging (10-30 minutes)
+
+```bash
+# Pull artifact
+# Deploy to staging cluster
+# Wait for health checks to pass
+# Smoke tests
+```
+
+**Staging Environment = Production Copy**
+
+Staging should mirror production exactly:
+- Same infrastructure
+- Same data (anonymized)
+- Same monitoring
+- Same security policies
+
+---
+
+### Stage 6: Integration & E2E Tests (20-60 minutes)
+
+```bash
+# Run tests against staging deployment
+# Test full user flows (login, checkout, etc.)
+# Load testing (simulate user traffic)
+# Smoke tests (basic health checks)
+```
+
+**Example E2E Test:**
+```python
+def test_user_checkout_flow():
+    # 1. Login
+    response = login("user@example.com", "password")
+    assert response.status == 200
+    
+    # 2. Add item to cart
+    response = add_to_cart("product-123")
+    assert response.status == 200
+    
+    # 3. Checkout
+    response = checkout()
+    assert response.status == 200
+    assert order_created()
+```
+
+**Gate:** All tests pass, error rates acceptable
+
+---
+
+### Stage 7: Manual Approval (Explicit Gate)
+
+```
+PR approved by 2 engineers
+ ↓
+All tests passing
+ ↓
+Deploy to Production [APPROVED/REJECTED]
+```
+
+**Who approves?**
+- Release manager
+- On-call engineer
+- Product lead
+
+**Why explicit gate?**
+- Accountability
+- One last chance to catch issues
+- Business decision (not just tech)
+
+---
+
+### Stage 8: Deploy to Production (5-30 minutes)
+
+```bash
+# Pull artifact (same one that passed staging)
+# Deploy to prod
+# Gradual rollout (canary or blue-green)
+# Health checks
+# Automatic rollback on failure
+```
+
+**Strategies:**
+- **Canary:** 10% of traffic → 50% → 100%
+- **Blue-Green:** Old version running alongside new, switch traffic
+- **Rolling:** Gradually replace old pods with new ones
+
+---
+
+## 2. Pipeline Performance
+
+Slow pipelines discourage frequent commits and feedback loops.
+
+### Metrics
+- Build time: Should be < 10 minutes for most projects
+- Test time: Parallel execution is key
+- Total lead time: < 30 minutes from commit to production-ready
+
+### Optimization Techniques
+
+**Parallel Execution**
+```yaml
+stages:
+  build:
+    jobs:
+      - compile
+      - unit_tests        # These run in parallel
+      - lint_code         # Doesn't wait for compile
+      - scan_dependencies
+```
+
+**Caching**
+```yaml
+cache:
+  paths:
+    - node_modules/     # Don't reinstall on every run
+    - .gradle/          # Cache Gradle dependencies
+```
+
+**Matrix Strategy** (Run same job with different inputs)
+```yaml
+test:
+  strategy:
+    matrix:
+      python-version: ['3.8', '3.9', '3.10', '3.11']
+      # Runs test job 4 times in parallel
+```
+
+---
+
+## 3. Pipeline Security
+
+### Secret Management
+
+**Never commit secrets to Git:**
+```bash
+# WRONG
+export AWS_SECRET_ACCESS_KEY=AKIA...  # In Jenkinsfile
+export DB_PASSWORD=secret123           # In .gitlab-ci.yml
+
+# RIGHT
+export AWS_SECRET_ACCESS_KEY=${AWS_SECRET}  # From CI/CD secrets
+export DB_PASSWORD=${DB_PASSWORD}           # From vault
+```
+
+**Use Platform Secrets:**
+- GitHub: Settings → Secrets
+- GitLab: CI/CD → Variables
+- Jenkins: Credentials plugin
+
+---
+
+### Artifact Signing
+
+```bash
+# Sign the docker image
+cosign sign myapp:sha-abc123
+
+# Verify before deployment
+cosign verify myapp:sha-abc123
+```
+
+**Benefits:**
+- Prove artifact authenticity
+- Prevent tampering
+- Satisfy compliance requirements
 
 ---
 
@@ -6538,6 +7020,300 @@ You compose pipelines instead of writing glue code.
 
 **Takeaway:**
 GitHub Actions shifts CI/CD closer to developers while reducing operational overhead.
+
+---
+
+Topic 5.3:
+Title: Deployment Strategies
+Order: 3
+
+Class 5.3.1:
+	Title: Deployment Patterns and Rollback Strategies
+	Description: Canary, Blue-Green, Rolling, and Feature Flags.
+Content Type: text
+Duration: 500 
+Order: 1
+		Text Content :
+ # Deployment Strategies: Shipping Safely
+
+The strategy you choose directly impacts your ability to respond to failures. Picking the right strategy for your application is critical.
+
+---
+
+## 1. Rolling Deployment (Traditional)
+
+Gradually replace old pods with new ones.
+
+```
+V1 V1 V1 V1 (4 running)
+   ↓
+V1 V1 V1 V2 (1 new)
+   ↓
+V1 V1 V2 V2 (2 new)
+   ↓
+V1 V2 V2 V2 (3 new)
+   ↓
+V2 V2 V2 V2 (all new)
+```
+
+**Kubernetes:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Max 1 extra pod during update
+      maxUnavailable: 1  # Max 1 pod down during update
+  template:
+    spec:
+      containers:
+      - name: app
+        image: myapp:v2
+```
+
+**Pros:**
+- Simple, no extra infrastructure
+- Gradual traffic shift
+- Automatic rollback on health check failure
+
+**Cons:**
+- No easy rollback (old code is gone)
+- Can't test old + new version together
+- Database migrations must be backward compatible
+
+---
+
+## 2. Blue-Green Deployment (Safest)
+
+Two identical production environments. Switch traffic between them.
+
+```
+┌─────────────────────┐
+│ Blue (v1)           │
+│ ✓ Running traffic   │
+└─────────────────────┘
+         ↓
+┌─────────────────────┐
+│ Green (v2)          │
+│ ✓ Ready, not in use │
+└─────────────────────┘
+         ↓ (Switch DNS/LB)
+┌─────────────────────┐
+│ Blue (v1) - stopped │
+│ Green (v2) running  │
+└─────────────────────┘
+```
+
+**Kubernetes Implementation:**
+```yaml
+# Blue environment
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+spec:
+  selector:
+    version: blue  # Points to blue deployment
+  ports:
+  - port: 80
+    targetPort: 8080
+
+---
+
+# Blue deployment (current)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-blue
+spec:
+  selector:
+    matchLabels:
+      version: blue
+  template:
+    metadata:
+      labels:
+        version: blue
+    spec:
+      containers:
+      - name: app
+        image: myapp:v1
+
+---
+
+# Green deployment (new)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-green
+spec:
+  selector:
+    matchLabels:
+      version: green
+  template:
+    metadata:
+      labels:
+        version: green
+    spec:
+      containers:
+      - name: app
+        image: myapp:v2
+```
+
+**Switching Traffic:**
+```bash
+# Verify green is healthy
+kubectl get pods -l version=green
+
+# Update service to point to green
+kubectl patch service myapp -p '{"spec":{"selector":{"version":"green"}}}'
+
+# If issue detected, instant rollback
+kubectl patch service myapp -p '{"spec":{"selector":{"version":"blue"}}}'
+```
+
+**Pros:**
+- Instant rollback (one kubectl command)
+- Can test new version fully before switching
+- Zero downtime
+- Supports database migrations
+
+**Cons:**
+- Requires double infrastructure (2x cost)
+- Both versions must coexist in production
+
+---
+
+## 3. Canary Deployment (Balanced)
+
+Send a small percentage of traffic to the new version. Gradually increase.
+
+```
+Traffic: 100% → 95% v1, 5% v2
+         ↓
+         95% v1, 10% v2
+         ↓
+         90% v1, 10% v2
+         ↓
+         50% v1, 50% v2
+         ↓
+         0% v1, 100% v2
+```
+
+**With Istio:**
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp
+spec:
+  hosts:
+  - myapp.example.com
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp
+        subset: v1
+      weight: 95
+    - destination:
+        host: myapp
+        subset: v2
+      weight: 5
+
+---
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: myapp
+spec:
+  host: myapp
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 100
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+```
+
+**Automated Canary (with Flagger):**
+```yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: myapp
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp
+  service:
+    port: 8080
+  analysis:
+    interval: 30s
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 5
+  metrics:
+  - name: error-rate
+    thresholdRange:
+      max: 1
+    interval: 1m
+  - name: latency
+    thresholdRange:
+      max: 500
+    interval: 1m
+```
+
+**Pros:**
+- Risk-limited (only 5% affected)
+- Automatic rollback on metrics breach
+- Detects issues before full rollout
+- Minimal extra infrastructure
+
+**Cons:**
+- More complex to set up
+- Requires good metrics/observability
+- Slower rollout (takes time)
+
+---
+
+## 4. Feature Flags (Application-Level)
+
+```python
+# Feature flag in code
+def checkout_page():
+    if is_feature_enabled('new_checkout'):
+        return new_checkout()
+    else:
+        return old_checkout()
+```
+
+**Deploy Without Restart:**
+- Change flag = instant behavior change
+- No redeployment needed
+- Rollback is instant
+
+**Tools:**
+- LaunchDarkly
+- Flagsmith
+- Unleash
+- ConfigCat
 
 ---
 
