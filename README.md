@@ -22548,11 +22548,408 @@ Unlike traditional monitoring (where agents push data to the server), **Promethe
     * *A:* `rate` handles counter resets (server restarts) gracefully.
 
 Class 7.2.2:
+Title: Cardinality Explosion & Management
+Description:  Understanding and preventing cardinality issues that crash Prometheus.
+Content Type: text
+Duration: 400 
+Order: 2
+Test Content:
+# Cardinality Explosion & Management
+
+Cardinality explosion is the number one production issue that crashes Prometheus servers. Understanding it is critical for operating Prometheus reliably at scale.
+
+---
+
+## 1. What is Cardinality?
+
+**Cardinality** is the number of unique time series created by a metric.
+
+Every unique combination of label values creates a new time series.
+
+### Example
+
+```text
+http_requests_total{method="GET", endpoint="/api/users", status="200"}
+http_requests_total{method="POST", endpoint="/api/users", status="201"}
+http_requests_total{method="GET", endpoint="/api/orders", status="200"}
+````
+
+If you have:
+
+* 4 HTTP methods (GET, POST, PUT, DELETE)
+* 10 endpoints
+* 5 status codes
+
+**Cardinality = 4 × 10 × 5 = 200 time series**
+
+This level of cardinality is manageable.
+
+---
+
+## 2. The Cardinality Explosion Problem
+
+### Bad Label Example
+
+```text
+# DO NOT DO THIS
+http_requests_total{user_id="12345", session_id="abc-xyz-123"}
+```
+
+If you have:
+
+* 1,000,000 users
+* Each user has 5 sessions per day
+
+**Cardinality = 1,000,000 × 5 = 5,000,000 time series**
+
+**Result:** Prometheus runs out of memory (OOM) and crashes.
+
+---
+
+## 3. Why High Cardinality Kills Prometheus
+
+Prometheus stores every time series in memory:
+
+* **Index:** Maps metric name and labels to storage locations
+* **Head Block:** Recent data (approximately 2 hours) stored in RAM
+
+### Memory Usage Approximation
+
+```text
+Memory ≈ (Number of Time Series) × (Samples per Series) × 8 bytes
+```
+
+For 5 million time series with 120 samples
+(2 hours at a 1-minute scrape interval):
+
+```text
+5,000,000 × 120 × 8 = 4.8 GB (raw samples)
+Index and metadata overhead ≈ 8–10 GB total
+```
+
+A single high-cardinality metric can exhaust all available memory.
+
+---
+
+## 4. High-Cardinality Labels to Avoid
+
+| Label      | Reason              | Cardinality |
+| ---------- | ------------------- | ----------- |
+| user_id    | Millions of users   | 1M+         |
+| email      | Unique per user     | 1M+         |
+| session_id | New per session     | 10M+        |
+| request_id | Unique per request  | Billions    |
+| ip_address | Unique per client   | 100K+       |
+| timestamp  | Constantly changing | Infinite    |
+
+**Rule:** Only use labels with bounded and finite values.
+
+---
+
+## 5. Good Labels (Bounded Cardinality)
+
+| Label       | Example Values               | Cardinality |
+| ----------- | ---------------------------- | ----------- |
+| method      | GET, POST, PUT, DELETE       | 4           |
+| status_code | 200, 404, 500                | ~10         |
+| region      | us-east, us-west, eu-central | ~10         |
+| service     | api, web, worker             | ~20         |
+| environment | prod, staging, dev           | 3           |
+| version     | v1.2.3, v1.2.4               | ~50         |
+
+**Total Cardinality Example**
+
+```text
+4 × 10 × 10 × 20 × 3 × 50 = 1.2 million
+```
+
+This is manageable when distributed across metrics.
+
+---
+
+## 6. Prevention Strategies
+
+### Strategy 1: Drop High-Cardinality Labels
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: "app"
+    metric_relabel_configs:
+      - source_labels: [user_id]
+        action: labeldrop
+        regex: user_id
+```
+
+---
+
+### Strategy 2: Replace Unbounded Labels with Bounded Labels
+
+```python
+# Bad
+requests.labels(user_id=user.id).inc()
+
+# Good
+requests.labels(user_tier=user.tier).inc()
+# user_tier ∈ {free, premium, enterprise}
+```
+
+---
+
+### Strategy 3: Enforce Scrape Limits
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: "app"
+    sample_limit: 10000
+    label_limit: 30
+```
+
+If a target exceeds these limits, Prometheus rejects the entire scrape and logs an error, protecting the server.
+
+---
+
+## 7. Monitoring Cardinality
+
+### Inspect Current Cardinality
+
+```promql
+# Total time series in memory
+prometheus_tsdb_head_series
+
+# Time series per job
+count by (job) ({__name__=~".+"})
+
+# Metrics with highest cardinality
+topk(10, count by (__name__) ({__name__=~".+"}))
+```
+
+### Alert on Excessive Cardinality
+
+```yaml
+- alert: HighCardinality
+  expr: prometheus_tsdb_head_series > 1000000
+  for: 5m
+  annotations:
+    summary: "Prometheus has {{ $value }} time series (limit: 1M)"
+```
+
+---
+
+## 8. Real-World Incident Example
+
+### Problematic Metric
+
+```python
+checkout_duration.labels(
+  user_id=user.id,
+  cart_id=cart.id
+).observe(duration)
+```
+
+### Impact
+
+* 500,000 users × 2 carts = 1,000,000 new time series
+* Memory usage increased from 2 GB to 12 GB in 10 minutes
+* Prometheus was OOM-killed by Kubernetes
+* Monitoring was unavailable for 30 minutes
+
+### Fix
+
+```python
+checkout_duration.labels(
+  user_tier=user.tier
+).observe(duration)
+```
+
+**Cardinality reduced from 1,000,000 to 3.**
+
+---
+
+## Key Takeaways
+
+* Cardinality equals the number of unique label combinations
+* High cardinality leads to memory exhaustion and crashes
+* Never use unbounded labels such as user_id or session_id
+* Use `labeldrop` to remove dangerous labels at scrape time
+* Monitor cardinality using `prometheus_tsdb_head_series`
+* Enforce scrape limits to protect Prometheus
+
+---
+
+Class 7.2.3:
+Title: PromQL Vector Types and irate() vs rate()
+Description: Instant vs Range Vectors and irate() vs rate().
+Content Type: text
+Duration: 400 
+Order: 3
+Test Content:
+
+## PromQL Vector Types: Instant vs Range
+
+Understanding vector types is essential for writing correct PromQL queries and avoiding common errors.
+
+---
+
+## 1. The Two Vector Types
+
+| Vector Type | Description                                      | Example  |
+| ----------- | ------------------------------------------------ | -------- |
+| Instant     | One value per time series at evaluation time     | `up`     |
+| Range       | Multiple values per time series over time window | `up[5m]` |
+
+**Critical Rule:** Functions require specific vector types.
+
+---
+
+## 2. Instant Vectors
+
+Definition: A set of time series with exactly one sample each.
+
+```promql
+up
+http_requests_total
+node_cpu_seconds_total
+```
+
+Use cases:
+
+* Current state
+* Mathematical operations
+* Comparisons
+
+---
+
+## 3. Range Vectors
+
+Definition: A set of time series with multiple samples over a time range.
+
+```promql
+http_requests_total[5m]
+node_cpu_seconds_total[1h]
+```
+
+Range vectors cannot be graphed directly and must be processed by a function.
+
+---
+
+## 4. Common Vector Type Errors
+
+```promql
+rate(http_requests_total)  # Error
+rate(http_requests_total[5m])  # Correct
+```
+
+---
+
+## 5. Functions and Vector Types
+
+### Functions Requiring Range Vectors
+
+* `rate()`
+* `irate()`
+* `increase()`
+* `delta()`
+* `*_over_time()`
+
+### Functions Returning Instant Vectors
+
+* `rate()`
+* `sum()`
+* `avg()`
+* `count()`
+
+---
+
+## 6. Practical Examples
+
+### Request Rate
+
+```promql
+rate(http_requests_total[5m])
+```
+
+### Error Rate Percentage
+
+```promql
+(
+  rate(http_requests_total{status=~"5.."}[5m])
+  /
+  rate(http_requests_total[5m])
+) * 100
+```
+
+---
+
+## 7. Time Range Selection
+
+Use a minimum window of four times the scrape interval.
+
+---
+
+## Key Takeaways
+
+* Instant vectors represent current values
+* Range vectors represent historical samples
+* Range vectors require functions before visualization
+* Most production queries use a 5-minute window
+
+---
+
+## rate() vs irate()
+
+Both functions calculate per-second rates for counter metrics but serve different purposes.
+
+---
+
+## rate()
+
+* Averages over the full window
+* Smooth and stable
+* Recommended for alerting and dashboards
+
+```promql
+rate(http_requests_total[5m])
+```
+
+---
+
+## irate()
+
+* Uses only the last two samples
+* Highly sensitive to spikes
+* Intended for debugging and investigation
+
+```promql
+irate(http_requests_total[1m])
+```
+
+---
+
+## Decision Guidance
+
+* Use `rate()` for alerts and long-term trends
+* Use `irate()` for short-term debugging
+* Never use `irate()` for alerting
+
+---
+
+## Final Summary
+
+* Cardinality control is critical for Prometheus stability
+* Instant and range vectors must be used correctly
+* `rate()` is production-safe
+* `irate()` is diagnostic-only
+
+---
+
+Class 7.2.4:
 	Title: Grafana
 	Description: Visualization and Dashboards.
 Content Type: text
 Duration: 450 
-Order: 2
+Order: 4
 		Text Content :
  # Grafana: Making Data Beautiful
 
