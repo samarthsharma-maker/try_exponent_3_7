@@ -8796,7 +8796,7 @@ Class 3.5.1:
 Content Type: text
 Duration: 300 
 Order: 1
-		Text Content :
+Text Content :
 # AWS Fundamentals – Challenge  
 **Contest Format | 5 Questions**
 
@@ -8999,6 +8999,23 @@ A healthy instance does not mean a healthy **application**.
 * Ability to reason during failures
 
 These scenarios mirror **real production AWS incidents**, not exam-style questions.
+
+Class 3.5.2:
+	Title: AWS - Challenge
+	Description: Scenario-based cloud architecture problems.
+Content Type: contest
+Duration: 7200
+Order: 2
+Context URL : https://www.scaler.com/hire/test/6af82ee29b/?ref=create#/problems
+Contest Questions : 15
+Contest Syllabus:
+- S3 Storage Classes & Lifecycle Policies
+- EC2 Instance Recovery & Troubleshooting
+- VPC Networking & NAT Gateway Configuration
+- ECS Task Definition
+- EKS Cluster Setup
+- Lambda and Dynamodb
+
 
 ---
 
@@ -16598,6 +16615,23 @@ spec:
   acquireTime: "2024-01-15T10:00:00Z"
   renewTime: "2024-01-15T10:00:05Z"
 ```
+Topic: 4.7
+Title: Containerization and Orchestration Challenge
+Order: 7
+
+
+Class 4.7.1:
+	Title: Docker and Kubernetes Challenge
+	Description: Scenario-based containerization and orchestration troubleshooting.
+Content Type: contest
+Duration: 7200
+Order: 1
+Context URL : https://www.scaler.com/hire/test/bacd612727/?ref=create#/problems
+Contest Questions : 15
+Contest Syllabus:
+- Docker images
+- Taint and Tolerations in K8s
+- K8s Architecture
 
 ---
 
@@ -16745,7 +16779,7 @@ feature/xxx (many developers)
 **Cons:**
 - Requires robust automated testing
 - Feature flags add complexity
-- Main branch must always be releasable
+- Main branch must always be releasable 
 
 **Feature Flags in Action:**
 ```python
@@ -19343,6 +19377,24 @@ def checkout_page():
 - Unleash
 - ConfigCat
 
+Topic: 5.4
+Title: CI/CD Challenge
+Order: 4
+
+
+Class 5.4.1:
+	Title: Jenkins, ArgoCD and GithubActions Challenge
+	Description: Test your knowledge on CI/CD concepts with this challenge.
+Content Type: contest
+Duration: 7200
+Order: 1
+Context URL : https://www.scaler.com/hire/test/04ed57322f/?ref=create#/problems
+Contest Questions : 15
+Contest Syllabus:
+- Github Actions
+- ArgoCD Concepts
+- Jenkins Pipelines
+
 ---
 
 Module 6:
@@ -21690,6 +21742,24 @@ module "rds" {
   version = "~> 3.0"  # >= 3.0, < 4.0
 }
 ```
+
+Topic: 6.5
+Title: IaC Challenge
+Order: 5
+
+
+Class 6.5.1:
+	Title: IaC Challenge
+	Description: Questions and Their respective answers
+Content Type: contest
+Duration: 7200
+Order: 1
+Context URL : https://www.scaler.com/hire/test/d6fc61f1f0/?ref=create#/problems
+Contest Questions : 15
+Contest Syllabus:
+- Terraform
+- Ansible
+- Policy as Code
 
 ---
 
