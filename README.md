@@ -1870,750 +1870,10 @@ This challenge reflects **real on-call Linux scenarios**, not textbook questions
 ---
 
 Topic 2.6:
-Title: Advanced Shell Scripting
+Title: Package Management Deep Dive
 Order: 6
 
 Class 2.6.1:
-	Title: Advanced Script Execution & Environment
-	Description: Shell behavior, profiles, and command types.
-Content Type: text
-Duration: 500 
-Order: 1
-		Text Content :
- # Advanced Shell Scripting Fundamentals
-
-## 1. Login vs Non-Login Shells (Comprehensive Guide)
-
-Understanding which startup files execute is critical for troubleshooting environment issues in DevOps. This is a frequent source of "works on my terminal but not in CI/CD" problems.
-
-### Login Shell - Deep Dive
-
-A login shell is created when:
-- SSH connection established (requires password/key authentication)
-- Console login (physical terminal or virtual console)
-- Explicit `login` command execution
-- Shell launched with `-l` flag: `bash -l`
-
-**Execution Order (Important for DevOps):**
-```
-1. /etc/profile           (system-wide settings)
-   - Sets PATH, PS1, environment
-   - Executed for ALL login shells
-   - Read by login, bash, sh, ksh, zsh (if run as login)
-
-2. /etc/profile.d/*       (modular profile configs - RHEL/CentOS)
-   - Individual scripts for different tools
-   - Examples: /etc/profile.d/java.sh, /etc/profile.d/oracle.sh
-
-3. ~/.bash_profile        (user-specific, if exists)
-   - Only read by bash (not sh, zsh, ksh)
-   - Typically sources ~/.bashrc
-   - Sets user environment variables
-
-   OR ~/.profile           (fallback if .bash_profile missing)
-   - POSIX standard (sh, ksh use this)
-   - Used if ~/.bash_profile doesn't exist
-
-4. ~/.bashrc              (typically sourced from .bash_profile)
-   - Shell functions, aliases, completions
-   - Interactive features
-```
-
-**Real Interview Question:** "Why does setting `export PATH=/new/path:$PATH` in ~/.bashrc break your cron jobs?"
-- **Answer:** Cron runs non-login shells, which only source ~/.bashrc if explicitly configured. Solution: Set PATH in ~/.bash_profile or /etc/profile, or explicitly source ~/.bashrc in cron.
-
-### Non-Login Shell - Complete Understanding
-
-A non-login shell is created when:
-- New terminal tab in GUI
-- Executing `bash` or `sh` command (without `-l`)
-- Subprocess spawned from script
-- Cron job execution
-- Remote command over SSH: `ssh host command`
-
-**Execution Order:**
-```
-ONLY ~/.bashrc
-(Does NOT read /etc/profile or ~/.bash_profile)
-
-Special case: /etc/bashrc is sometimes sourced by ~/.bashrc
-(Depends on system configuration)
-```
-
-**Why This Matters in DevOps:**
-
-```bash
-# WRONG - Won't work in cron or CI/CD pipelines
-# ~/.bash_profile
-export JAVA_HOME="/usr/lib/jvm/java-11"
-export PATH="/opt/custom/bin:$PATH"
-
-# WRONG - Cron doesn't source this!
-# Script will fail to find commands or JAVA_HOME
-
-# RIGHT - Put in ~/.bashrc (sourced by cron if configured)
-# ~/.bashrc
-export JAVA_HOME="/usr/lib/jvm/java-11"
-export PATH="/opt/custom/bin:$PATH"
-
-# OR BETTER - Put in /etc/profile or /etc/profile.d/
-# Then it applies to all login and many non-login shells
-```
-
-**DevOps Best Practice:**
-
-```bash
-# In ~/.bash_profile or ~/.bashrc (login or interactive)
-if [[ -f ~/.bashrc ]]; then
-    source ~/.bashrc
-fi
-
-# In ~/.bashrc (interactive shells)
-# Put environment variables that must be set everywhere
-export PATH="/usr/local/bin:/usr/bin:/bin"
-export EDITOR=vim
-
-# In ~/.bash_profile ONLY (login shells)
-# Put terminal-specific settings (like greeting)
-echo "Welcome to $(hostname)"
-```
-
----
-
-## 2. Internal (Builtin) vs External Commands (Interview Focus)
-
-**Builtins:**
-Commands built into the shell itself. No process spawning.
-```bash
-cd, echo, export, source, type, jobs, fg, bg
-```
-
-**Why `cd` must be builtin:**
-```bash
-# If cd were external:
-$ cd /tmp
-# Would spawn a child process, change directory in child
-# Child exits, parent still in original directory!
-# So cd MUST be builtin to affect the current shell
-```
-
-**External Commands:**
-Separate executables on disk.
-```bash
-/bin/ls, /usr/bin/grep, /usr/bin/awk
-```
-
-**Identifying Command Type:**
-```bash
-$ type cd
-cd is a shell builtin
-
-$ type ls
-ls is /bin/ls
-
-$ type -a echo
-echo is a shell builtin
-echo is /bin/echo
-```
-
----
-
-## 3. source (.) vs execute (./) - Production Consequences
-
-**Source (executes in CURRENT shell):**
-```bash
-source script.sh        # Standard syntax
-. script.sh            # POSIX syntax (faster in some contexts)
-```
-
-**Characteristics:**
-- Script executes in parent shell process
-- Variables, functions, aliases defined in script persist after execution
-- Can affect parent environment
-- Script sees parent's variables
-- Can `cd` and affect parent's working directory (rare but possible)
-- No subshell overhead (faster)
-
-**Execute (spawns NEW shell):**
-```bash
-./script.sh            # Make executable first
-bash script.sh         # Explicitly invoke bash
-sh script.sh           # Invoke POSIX shell
-```
-
-**Characteristics:**
-- Script spawns child process
-- Child process gets copy of parent's environment (but independent)
-- Changes to variables/functions lost when child exits
-- Cannot affect parent's working directory
-- Subshell overhead (slower)
-- Safer isolation (script can't modify parent environment)
-
-**Detailed Example:**
-
-```bash
-# File: config.sh
-export MY_VAR="hello"
-export DATABASE_URL="postgres://localhost:5432/mydb"
-MY_FUNC() { 
-    echo "Function defined: $1" 
-}
-
-# Sourcing
-$ source config.sh
-$ echo $MY_VAR              # hello (AVAILABLE)
-$ echo $DATABASE_URL        # postgres://... (AVAILABLE)
-$ MY_FUNC "test"            # Function defined: test (WORKS)
-
-# Executing
-$ bash config.sh
-$ echo $MY_VAR              # (empty - LOST)
-$ echo $DATABASE_URL        # (empty - LOST)
-$ MY_FUNC "test"            # command not found (LOST)
-
-# Why? Script ran in subshell, had own environment copy
-```
-
-**Real DevOps Scenario:**
-
-```bash
-# File: /opt/deploy/setup-env.sh
-export DEPLOY_ENV="production"
-export REGISTRY="registry.company.com"
-export KUBERNETES_VERSION="1.28.0"
-
-# In deployment script:
-source /opt/deploy/setup-env.sh    # RIGHT for accessing these variables
-bash /opt/deploy/setup-env.sh      # WRONG - variables lost after script ends
-
-# Consequences:
-# If you execute instead of source:
-# - $DEPLOY_ENV not available downstream
-# - Subsequent kubectl commands fail
-# - Deployment rolls back or fails mysteriously
-```
-
-**Interview Question:** "Your CI/CD pipeline deploys successfully locally but fails in GitLab CI. The error is 'REGISTRY variable not found'. What happened?"
-
-**Answer:** "The setup script is likely being executed instead of sourced. In non-interactive environments like CI/CD:
-- Check if using `bash script.sh` instead of `source script.sh` or `. script.sh`
-- Verify variables are exported (not just declared)
-- Ensure sourcing happens in same shell context as deployment commands"
-
----
-
-Class 2.6.2:
-	Title: Advanced Variables & Parameter Expansion
-	Description: Environment variables, scoping, and argument handling.
-Content Type: text
-Duration: 500 
-Order: 2
-		Text Content :
- # Variables & Scoping
-
-## 1. export and Environment Variable Scope
-
-```bash
-MY_VAR="value"              # Local variable (shell only)
-export MY_VAR="value"       # Environment variable (passed to children)
-```
-
-**One-Way Street (Parent → Child):**
-```bash
-# parent_shell.sh
-export PARENT_VAR="from_parent"
-
-bash child_shell.sh
-# Inside child:
-echo $PARENT_VAR  # "from_parent" (inherited)
-
-# If child modifies:
-PARENT_VAR="modified"
-exit
-
-# Back in parent:
-echo $PARENT_VAR  # Still "from_parent" (unchanged!)
-```
-
-**Why Can't Children Modify Parent Environment?**
-Each process has its own memory space. Child inherits a *copy* of parent's environment, not a reference.
-
----
-
-## 2. Special Variables: $* vs $@
-
-These differ significantly when quoted:
-
-```bash
-# script.sh
-echo "With \$*:"
-for arg in $*; do
-  echo "  $arg"
-done
-
-echo "With \$@:"
-for arg in "$@"; do
-  echo "  $arg"
-done
-```
-
-**Execution:**
-```bash
-$ ./script.sh "arg 1" "arg 2"
-
-With $*:
-  arg
-  1
-  arg
-  2
-
-With $@:
-  arg 1
-  arg 2
-```
-
-**Why This Matters:**
-```bash
-# WRONG: Loses argument boundaries
-function backup() {
-  tar -czf backup.tar.gz $*  # If arg has spaces, breaks!
-}
-
-# RIGHT: Preserves arguments
-function backup() {
-  tar -czf backup.tar.gz "$@"  # Correctly handles spaces
-}
-```
-
----
-
-## 3. Other Special Variables
-
-```bash
-$$      # Current shell PID
-$!      # PID of last background job
-$?      # Exit code of last command
-$#      # Number of positional arguments
-$0      # Script name
-$1..$9  # Positional arguments
-```
-
----
-
-## 4. Command Substitution
-
-```bash
-# Old way (backticks) - limited nesting
-current_date=`date`
-
-# Modern way (preferred) - supports nesting
-current_date=$(date)
-nested=$(echo $(date))
-```
-
----
-
-Class 2.6.3:
-	Title: Advanced Conditionals
-	Description: Test operators, pattern matching, and regex.
-Content Type: text
-Duration: 450 
-Order: 3
-		Text Content :
- # Conditional Statements Deep Dive
-
-## 1. [ ] vs [[ ]]
-
-### [ ] (POSIX test)
-- POSIX compliant (portable to sh, dash, etc.)
-- Performs word splitting on variables
-- No pattern matching or regex
-
-```bash
-if [ $file = "test.txt" ]; then
-  echo "Match"
-fi
-```
-
-**Problem:**
-```bash
-file="test file.txt"
-if [ $file = "test file.txt" ]; then  # ERROR: unary operator expected
-```
-Because `$file` expands to two arguments!
-
-### [[ ]] (Bash extended test)
-- Bash-only (not POSIX)
-- NO word splitting
-- Supports pattern matching and regex
-- SAFER for variable handling
-
-```bash
-file="test file.txt"
-if [[ $file = "test file.txt" ]]; then  # WORKS!
-  echo "Match"
-fi
-```
-
----
-
-## 2. Pattern Matching
-
-```bash
-if [[ $filename == *.log ]]; then
-  echo "Log file"
-fi
-
-if [[ $name =~ ^[A-Z] ]]; then
-  echo "Starts with uppercase"
-fi
-```
-
----
-
-## 3. Logical Operators
-
-```bash
-# Old POSIX way
-if [ $x -gt 5 -a $y -lt 10 ]; then  # -a = AND
-  
-if [ $x -gt 5 -o $y -lt 10 ]; then  # -o = OR
-
-# Modern way (cleaner)
-if [[ $x -gt 5 && $y -lt 10 ]]; then
-
-if [[ $x -gt 5 || $y -lt 10 ]]; then
-```
-
----
-
-Class 2.6.4:
-	Title: Arrays & Associative Arrays
-	Description: Indexed arrays and key-value pairs.
-Content Type: text
-Duration: 400 
-Order: 4
-		Text Content :
- # Arrays in Bash
-
-## 1. Indexed Arrays
-
-```bash
-# Create array
-declare -a fruits=("apple" "banana" "orange")
-
-# OR
-fruits[0]="apple"
-fruits[1]="banana"
-
-# Access single element
-echo ${fruits[0]}  # apple
-
-# All elements
-echo ${fruits[@]}  # apple banana orange
-
-# Array length
-echo ${#fruits[@]}  # 3
-
-# Iterate
-for fruit in "${fruits[@]}"; do
-  echo $fruit
-done
-```
-
----
-
-## 2. Associative Arrays (Bash 4.0+)
-
-```bash
-declare -A config
-
-config["database"]="postgres"
-config["port"]="5432"
-config["user"]="admin"
-
-# Access
-echo ${config["database"]}  # postgres
-
-# All keys
-echo ${!config[@]}  # database port user
-
-# Iterate
-for key in "${!config[@]}"; do
-  echo "$key: ${config[$key]}"
-done
-```
-
-**Real-World Example:**
-```bash
-declare -A services
-services["nginx"]="80"
-services["postgres"]="5432"
-services["redis"]="6379"
-
-for service in "${!services[@]}"; do
-  port=${services[$service]}
-  echo "Checking if $service is running on port $port"
-done
-```
-
----
-
-Class 2.6.5:
-	Title: Advanced I/O & File Descriptors
-	Description: Streams, redirections, and inter-process communication.
-Content Type: text
-Duration: 500 
-Order: 5
-		Text Content :
- # File Descriptors & I/O Redirection
-
-## 1. File Descriptors (0, 1, 2)
-
-Every process has three standard file descriptors:
-```
-0 = stdin  (standard input)
-1 = stdout (standard output)
-2 = stderr (standard error)
-```
-
----
-
-## 2. Redirection Order Matters!
-
-```bash
-# CORRECT: Redirect stderr to where stdout is going
-command > file.log 2>&1
-# First > file.log (redirect stdout)
-# Then 2>&1 (redirect stderr to stdout's destination)
-
-# WRONG: Does something different
-command 2>&1 > file.log
-# First 2>&1 (stderr to stdout, currently pointing to terminal)
-# Then > file.log (stdout to file, but stderr still points to terminal)
-```
-
----
-
-## 3. Common I/O Patterns
-
-```bash
-# Suppress all output
-command > /dev/null 2>&1
-
-# Capture stderr separately
-command 2> errors.log > output.log
-
-# Append instead of overwrite
-command >> file.log 2>&1
-
-# Discard stderr, keep stdout
-command 2> /dev/null
-```
-
----
-
-## 4. Here Documents & Here Strings
-
-**Here Document (<<):**
-```bash
-cat << EOF
-This is a here document
-Variables expanded: $HOME
-EOF
-
-cat << 'EOF'  # Single quotes = no expansion
-$HOME not expanded
-EOF
-```
-
-**Here String (<<<):**
-```bash
-# Simpler than here document for single input
-grep "pattern" <<< "some input string"
-
-while read line; do
-  echo "Line: $line"
-done <<< "multi
-line
-input"
-```
-
----
-
-## 5. Reading Files Properly
-
-**WRONG:**
-```bash
-cat file.log | while read line; do
-  count=$((count + 1))  # Lost! Subshell doesn't update parent
-done
-echo $count  # Empty!
-```
-
-**RIGHT:**
-```bash
-while IFS= read -r line; do
-  count=$((count + 1))
-done < file.log
-echo $count  # Works!
-```
-
-**Why?** `cat file | while` creates a subshell; `< file` redirects in current shell.
-
----
-
-Class 2.6.6:
-	Title: Error Handling & Exit Codes
-	Description: Exit codes, strict mode, and signal handling.
-Content Type: text
-Duration: 500 
-Order: 6
-		Text Content :
- # Error Handling in Shell Scripts
-
-## 1. Exit Codes
-
-Every command returns an exit code (0 = success, non-zero = failure).
-
-```bash
-$ ls /tmp
-$ echo $?        # 0 (success)
-
-$ ls /nonexistent
-$ echo $?        # 2 (failure)
-```
-
----
-
-## 2. Strict Mode
-
-```bash
-#!/bin/bash
-set -euo pipefail
-
-# -e (errexit): Exit on first error
-# -u (nounset): Error on undefined variables
-# -o pipefail: Fail if any command in pipe fails
-```
-
-**Without strict mode:**
-```bash
-#!/bin/bash
-database=$DATABASE_URL  # If undefined, silently becomes empty
-connect_db              # Might hang or fail silently
-rm -rf /important/*     # Dangerous if vars are empty!
-```
-
-**With strict mode:**
-```bash
-#!/bin/bash
-set -euo pipefail
-database=$DATABASE_URL  # Errors: DATABASE_URL is undefined
-```
-
----
-
-## 3. When set -e Does NOT Exit
-
-```bash
-set -e
-
-# Does NOT exit (conditional context)
-if false; then
-  echo "not printed"
-fi
-
-# Does NOT exit (|| operator)
-false || echo "handled"
-
-# Does NOT exit (&& operator - tricky!)
-false && echo "not printed"
-```
-
----
-
-## 4. Signal Handling with trap
-
-```bash
-#!/bin/bash
-
-# Cleanup on ANY exit
-trap "rm -f $tempfile" EXIT
-
-# Handle Ctrl+C
-trap "echo 'Interrupted!'; exit 130" INT
-
-# Handle SIGTERM
-trap "graceful_shutdown" TERM
-
-tempfile=$(mktemp)
-# If script exits (for any reason), tempfile is cleaned up
-```
-
----
-
-Class 2.6.7:
-	Title: Script Debugging & Validation
-	Description: Syntax checking and execution tracing.
-Content Type: text
-Duration: 350 
-Order: 7
-		Text Content :
- # Debugging Shell Scripts
-
-## 1. Syntax Checking
-
-```bash
-bash -n script.sh  # Check syntax without running
-bash -x script.sh  # Run with execution tracing
-```
-
-**Partial Tracing:**
-```bash
-#!/bin/bash
-# ... code ...
-
-set -x  # Start tracing
-command1
-command2
-
-set +x  # Stop tracing
-command3  # Not traced
-```
-
----
-
-## 2. Custom Trace Prompts
-
-```bash
-export PS4='[${BASH_SOURCE}:${LINENO}] ${FUNCNAME[0]}() '
-bash -x script.sh
-
-# Output:
-# [script.sh:10] main() + echo "Starting"
-```
-
----
-
-## 3. ShellCheck
-
-```bash
-shellcheck script.sh  # Lint tool - catches common errors
-```
-
-**Common Issues:**
-- Unquoted variables: `$file` should be `"$file"`
-- Undefined variables
-- Using single brackets when [[ ]] is safer
-
----
-
-Topic 2.7:
-Title: Package Management Deep Dive
-Order: 7
-
-Class 2.7.1:
 	Title: Debian/Ubuntu Package Management
 	Description: apt, dpkg, and repository management.
 Content Type: text
@@ -2823,7 +2083,7 @@ RUN apt-get install -y docker-ce=5:20.10.21~3-0~ubuntu-focal
 
 ---
 
-Class 2.7.2:
+Class 2.6.2:
 	Title: RHEL/CentOS Package Management
 	Description: yum, dnf, and rpm operations.
 Content Type: text
@@ -2895,11 +2155,11 @@ dnf history undo 5             # Rollback transaction 5
 
 ---
 
-Topic 2.8:
+Topic 2.7:
 Title: Task Scheduling & Automation
-Order: 8
+Order: 7
 
-Class 2.8.1:
+Class 2.7.1:
 	Title: Cron & Scheduled Tasks
 	Description: Cron syntax, configuration, and debugging.
 Content Type: text
@@ -3104,7 +2364,7 @@ MAILTO=""
 # RIGHT: Check if previous instance running
 */15 * * * * pgrep -f long_job.sh > /dev/null && exit 0; /usr/local/bin/long_job.sh
 
-# RIGHT: Use systemd timer instead (better, covered in 2.8.2)
+# RIGHT: Use systemd timer instead (better, covered in 2.7.2)
 ```
 
 **Issue 4: Environment Variables (Missing from Cron Context)**
@@ -3203,7 +2463,7 @@ crontab -e  # Add job, save
 
 ---
 
-Class 2.8.2:
+Class 2.7.2:
 	Title: Advanced Scheduling
 	Description: systemd timers, anacron, and at.
 Content Type: text
@@ -3287,11 +2547,11 @@ atrm 1              # Remove at job #1
 
 ---
 
-Topic 2.9:
+Topic 2.8:
 Title: Advanced Storage & Filesystems
-Order: 9
+Order: 8
 
-Class 2.9.1:
+Class 2.8.1:
 	Title: Hard Links vs Soft Links & Inodes
 	Description: Understanding inode-based filesystem architecture.
 Content Type: text
@@ -3557,7 +2817,7 @@ readlink -f /tmp/logs           # Shows absolute path (resolves ../)
 
 ---
 
-Class 2.9.2:
+Class 2.8.2:
 	Title: LVM (Logical Volume Manager)
 	Description: Creating and managing flexible storage.
 Content Type: text
@@ -3814,11 +3074,11 @@ echo "Backup complete and snapshot removed"
 
 ---
 
-Topic 2.10:
+Topic 2.9:
 Title: Advanced Process Management & Performance
-Order: 10
+Order: 9
 
-Class 2.10.1:
+Class 2.9.1:
 	Title: Process Priority & Nice Values
 	Description: CPU scheduling and process priority.
 Content Type: text
@@ -3920,7 +3180,7 @@ ps -eo pid,class,rtprio,cmd | grep -E '^PID|rt'
 
 ---
 
-Class 2.10.2:
+Class 2.9.2:
 	Title: Background Jobs & Job Control
 	Description: Foreground, background, and terminal sessions.
 Content Type: text
@@ -4157,7 +3417,7 @@ kill -9 5431  # Kill parent of zombie
 
 ---
 
-Class 2.10.3:
+Class 2.9.3:
 	Title: Process Relationships & Monitoring
 	Description: Parent/child processes and tree visualization.
 Content Type: text
@@ -4205,11 +3465,11 @@ $ exit
 
 ---
 
-Topic 2.11:
+Topic 2.10:
 Title: Advanced Signal Handling
-Order: 11
+Order: 10
 
-Class 2.11.1:
+Class 2.10.1:
 	Title: Signals Deep Dive
 	Description: Complete signal list and real-world handling.
 Content Type: text
@@ -6293,7 +5553,7 @@ After: ec2.us-east-1.amazonaws.com → 10.0.1.50 (private IP)
 
 ---
 
-Topic 3.1.7:
+Class 3.1.7:
 Title: EC2 Deep Dive - Instance Lifecycle and Cost Optimization
 Description: Instance states, EBS volumes, and purchasing options
 Content Type: text
@@ -11994,11 +11254,11 @@ If the Control Plane is the brain, worker nodes are the hands and legs that do t
 ---
 
 Class 4.2.3:
-  Title: kube-proxy Modes
-  Description: iptables vs. IPVS.
+Title: kube-proxy Modes
+Description: iptables vs. IPVS.
 Content Type: text
-  Duration: 300
-  Order: 3
+Duration: 400
+Order: 3
     Text Content :
 ### kube-proxy Implementation Modes
 
@@ -22553,7 +21813,7 @@ Description:  Understanding and preventing cardinality issues that crash Prometh
 Content Type: text
 Duration: 400 
 Order: 2
-Test Content:
+		Text Content :
 # Cardinality Explosion & Management
 
 Cardinality explosion is the number one production issue that crashes Prometheus servers. Understanding it is critical for operating Prometheus reliably at scale.
@@ -22784,7 +22044,7 @@ Description: Instant vs Range Vectors and irate() vs rate().
 Content Type: text
 Duration: 400 
 Order: 3
-Test Content:
+		Text Content :
 
 ## PromQL Vector Types: Instant vs Range
 
@@ -27101,348 +26361,2688 @@ policies:
 
 Module 9:
 Title: Scripting & Programming for DevOps
-Description: Master automation through scripting. Deep dive into Bash and Python for infrastructure automation, API integration, and operational tooling.
+Description: Master automation through scripting. Deep dive into Bash and Python for infrastructure automation, API integration, and operational tooling. Build production-grade scripts with proper error handling, testing, and defensive programming practices.
 Order: 9
 Learning Outcomes:
-Master advanced Bash scripting
-Use Python for infrastructure automation
-Integrate with cloud APIs
-Build operational tools
+Master advanced Bash scripting with production-grade safety practices
+Understand shell environments, execution contexts, and variable scoping
+Use Python for infrastructure automation and API integration
+Build operational tools with proper error handling and input validation
+Integrate with cloud APIs (AWS, Kubernetes) following best practices
 
 Topic 9.1:
-Title: Bash Scripting
+Title: Advanced Bash Scripting
 Order: 1
 
 Class 9.1.1:
-	Title: Advanced Bash Techniques
-	Description: Functions, arrays, and error handling.
+	Title: Shell Execution Fundamentals
+	Description: Understanding login vs non-login shells, command types, and execution contexts.
 Content Type: text
-Duration: 450 
+Duration: 500 
 Order: 1
 		Text Content :
+ # Shell Execution Fundamentals
 
-# Bash: The Duct Tape of DevOps
+## 1. Login vs Non-Login Shells (Critical DevOps Knowledge)
 
-## 1. Beyond One-Liners
-Anyone can write `mkdir test`. Senior DevOps engineers write **maintainable, safe, reusable Bash**.
-That means:
-* Functions instead of copy-paste
-* Explicit error handling
-* Predictable behavior in failure scenarios
+Understanding which startup files execute is critical for troubleshooting environment issues in DevOps. This is a frequent source of "works on my terminal but not in CI/CD" problems.
 
-Treat Bash as a programming language, not a shell toy.
+### Login Shell - Deep Dive
+
+A login shell is created when:
+- SSH connection established (requires password/key authentication)
+- Console login (physical terminal or virtual console)
+- Explicit `login` command execution
+- Shell launched with `-l` flag: `bash -l`
+
+**Execution Order (Important for DevOps):**
+```
+1. /etc/profile           (system-wide settings)
+   - Sets PATH, PS1, environment
+   - Executed for ALL login shells
+   - Read by login, bash, sh, ksh, zsh (if run as login)
+
+2. /etc/profile.d/*       (modular profile configs - RHEL/CentOS)
+   - Individual scripts for different tools
+   - Examples: /etc/profile.d/java.sh, /etc/profile.d/oracle.sh
+
+3. ~/.bash_profile        (user-specific, if exists)
+   - Only read by bash (not sh, zsh, ksh)
+   - Typically sources ~/.bashrc
+   - Sets user environment variables
+
+   OR ~/.profile           (fallback if .bash_profile missing)
+   - POSIX standard (sh, ksh use this)
+   - Used if ~/.bash_profile doesn't exist
+
+4. ~/.bashrc              (typically sourced from .bash_profile)
+   - Shell functions, aliases, completions
+   - Interactive features
+```
+
+**Real Interview Question:** "Why does setting `export PATH=/new/path:$PATH` in ~/.bashrc break your cron jobs?"
+- **Answer:** Cron runs non-login shells, which only source ~/.bashrc if explicitly configured. Solution: Set PATH in ~/.bash_profile or /etc/profile, or explicitly source ~/.bashrc in cron.
+
+### Non-Login Shell - Complete Understanding
+
+A non-login shell is created when:
+- New terminal tab in GUI
+- Executing `bash` or `sh` command (without `-l`)
+- Subprocess spawned from script
+- Cron job execution
+- Remote command over SSH: `ssh host command`
+
+**Execution Order:**
+```
+ONLY ~/.bashrc
+(Does NOT read /etc/profile or ~/.bash_profile)
+
+Special case: /etc/bashrc is sometimes sourced by ~/.bashrc
+(Depends on system configuration)
+```
+
+**Why This Matters in DevOps:**
+
+```bash
+# WRONG - Won't work in cron or CI/CD pipelines
+# ~/.bash_profile
+export JAVA_HOME="/usr/lib/jvm/java-11"
+export PATH="/opt/custom/bin:$PATH"
+
+# WRONG - Cron doesn't source this!
+# Script will fail to find commands or JAVA_HOME
+
+# RIGHT - Put in ~/.bashrc (sourced by cron if configured)
+# ~/.bashrc
+export JAVA_HOME="/usr/lib/jvm/java-11"
+export PATH="/opt/custom/bin:$PATH"
+
+# OR BETTER - Put in /etc/profile or /etc/profile.d/
+# Then it applies to all login and many non-login shells
+```
+
+**DevOps Best Practice:**
+
+```bash
+# In ~/.bash_profile or ~/.bashrc (login or interactive)
+if [[ -f ~/.bashrc ]]; then
+    source ~/.bashrc
+fi
+
+# In ~/.bashrc (interactive shells)
+# Put environment variables that must be set everywhere
+export PATH="/usr/local/bin:/usr/bin:/bin"
+export EDITOR=vim
+
+# In ~/.bash_profile ONLY (login shells)
+# Put terminal-specific settings (like greeting)
+echo "Welcome to $(hostname)"
+```
 
 ---
 
-## 2. Functions & Scope
-Use functions to enforce structure and reuse.
+## 2. Internal (Builtin) vs External Commands (Interview Focus)
 
-* **Scope Rule:** Bash variables are **global by default**.
-  * A variable modified inside a function affects the entire script.
-  * This is a common source of subtle bugs.
+**Builtins:**
+Commands built into the shell itself. No process spawning.
+```bash
+cd, echo, export, source, type, jobs, fg, bg
+```
 
-* **Best Practice:** Always declare function variables as `local`.
+**Why `cd` must be builtin:**
+```bash
+# If cd were external:
+$ cd /tmp
+# Would spawn a child process, change directory in child
+# Child exits, parent still in original directory!
+# So cd MUST be builtin to affect the current shell
+```
+
+**External Commands:**
+Separate executables on disk.
+```bash
+/bin/ls, /usr/bin/grep, /usr/bin/awk
+```
+
+**Identifying Command Type:**
+```bash
+$ type cd
+cd is a shell builtin
+
+$ type ls
+ls is /bin/ls
+
+$ type -a echo
+echo is a shell builtin
+echo is /bin/echo
+```
+
+---
+
+## 3. source (.) vs execute (./) - Production Consequences
+
+**Source (executes in CURRENT shell):**
+```bash
+source script.sh        # Standard syntax
+. script.sh            # POSIX syntax (faster in some contexts)
+```
+
+**Characteristics:**
+- Script executes in parent shell process
+- Variables, functions, aliases defined in script persist after execution
+- Can affect parent environment
+- Script sees parent's variables
+- Can `cd` and affect parent's working directory (rare but possible)
+- No subshell overhead (faster)
+
+**Execute (spawns NEW shell):**
+```bash
+./script.sh            # Make executable first
+bash script.sh         # Explicitly invoke bash
+sh script.sh           # Invoke POSIX shell
+```
+
+**Characteristics:**
+- Script spawns child process
+- Child process gets copy of parent's environment (but independent)
+- Changes to variables/functions lost when child exits
+- Cannot affect parent's working directory
+- Subshell overhead (slower)
+- Safer isolation (script can't modify parent environment)
+
+**Detailed Example:**
+
+```bash
+# File: config.sh
+export MY_VAR="hello"
+export DATABASE_URL="postgres://localhost:5432/mydb"
+MY_FUNC() { 
+    echo "Function defined: $1" 
+}
+
+# Sourcing
+$ source config.sh
+$ echo $MY_VAR              # hello (AVAILABLE)
+$ echo $DATABASE_URL        # postgres://... (AVAILABLE)
+$ MY_FUNC "test"            # Function defined: test (WORKS)
+
+# Executing
+$ bash config.sh
+$ echo $MY_VAR              # (empty - LOST)
+$ echo $DATABASE_URL        # (empty - LOST)
+$ MY_FUNC "test"            # command not found (LOST)
+
+# Why? Script ran in subshell, had own environment copy
+```
+
+**Real DevOps Scenario:**
+
+```bash
+# File: /opt/deploy/setup-env.sh
+export DEPLOY_ENV="production"
+export REGISTRY="registry.company.com"
+export KUBERNETES_VERSION="1.28.0"
+
+# In deployment script:
+source /opt/deploy/setup-env.sh    # RIGHT for accessing these variables
+bash /opt/deploy/setup-env.sh      # WRONG - variables lost after script ends
+
+# Consequences:
+# If you execute instead of source:
+# - $DEPLOY_ENV not available downstream
+# - Subsequent kubectl commands fail
+# - Deployment rolls back or fails mysteriously
+```
+
+**Interview Question:** "Your CI/CD pipeline deploys successfully locally but fails in GitLab CI. The error is 'REGISTRY variable not found'. What happened?"
+
+**Answer:** "The setup script is likely being executed instead of sourced. In non-interactive environments like CI/CD:
+- Check if using `bash script.sh` instead of `source script.sh` or `. script.sh`
+- Verify variables are exported (not just declared)
+- Ensure sourcing happens in same shell context as deployment commands"
+
+---
+
+Class 9.1.2:
+	Title: Variables, Scoping & Parameter Expansion
+	Description: Environment variables, scoping, and argument handling.
+Content Type: text
+Duration: 500 
+Order: 2
+		Text Content :
+ # Variables & Scoping
+
+## 1. export and Environment Variable Scope
+
+```bash
+MY_VAR="value"              # Local variable (shell only)
+export MY_VAR="value"       # Environment variable (passed to children)
+```
+
+**One-Way Street (Parent → Child):**
+```bash
+# parent_shell.sh
+export PARENT_VAR="from_parent"
+
+bash child_shell.sh
+# Inside child:
+echo $PARENT_VAR  # "from_parent" (inherited)
+
+# If child modifies:
+PARENT_VAR="modified"
+exit
+
+# Back in parent:
+echo $PARENT_VAR  # Still "from_parent" (unchanged!)
+```
+
+**Why Can't Children Modify Parent Environment?**
+Each process has its own memory space. Child inherits a *copy* of parent's environment, not a reference.
+
+---
+
+## 2. Special Variables: $* vs $@
+
+These differ significantly when quoted:
+
+```bash
+# script.sh
+echo "With \$*:"
+for arg in "$*"; do
+  echo "  $arg"
+done
+
+echo "With \$@:"
+for arg in "$@"; do
+  echo "  $arg"
+done
+```
+
+**Execution:**
+```bash
+$ ./script.sh "arg 1" "arg 2"
+
+With "$*":
+  arg 1 arg 2
+
+With "$@":
+  arg 1
+  arg 2
+```
+
+**Why This Matters:**
+```bash
+# WRONG: Loses argument boundaries
+function backup() {
+  tar -czf backup.tar.gz $*  # If arg has spaces, breaks!
+}
+
+# RIGHT: Preserves arguments
+function backup() {
+  tar -czf backup.tar.gz "$@"  # Correctly handles spaces
+}
+```
+
+---
+
+## 3. Other Special Variables
+
+```bash
+$$      # Current shell PID
+$!      # PID of last background job
+$?      # Exit code of last command
+$#      # Number of positional arguments
+$0      # Script name
+$1..$9  # Positional arguments
+${10}   # Arguments 10 and beyond require braces
+```
+
+---
+
+## 4. Command Substitution
+
+```bash
+# Old way (backticks) - limited nesting
+current_date=`date`
+
+# Modern way (preferred) - supports nesting
+current_date=$(date)
+nested=$(echo $(date))
+```
+
+---
+
+## 5. Parameter Expansion (Advanced)
+
+**Default Values:**
+```bash
+${VAR:-default}      # If VAR unset or null, use "default"
+${VAR:=default}      # If VAR unset or null, assign and use "default"
+${VAR:?error_msg}    # If VAR unset or null, print error and exit
+${VAR:+alternate}    # If VAR set and not null, use "alternate"
+```
+
+**String Manipulation:**
+```bash
+file="report.txt"
+${file%.txt}         # Remove shortest match from end: "report"
+${file%.*}           # Remove extension: "report"
+${file#*.}           # Remove shortest match from beginning: "txt"
+${file/report/summary}  # Replace first occurrence: "summary.txt"
+${file//r/R}         # Replace all occurrences: "RepoRt.txt"
+```
+
+**Length:**
+```bash
+${#VAR}              # Length of variable value
+```
+
+---
+
+Class 9.1.3:
+	Title: Advanced Conditionals & Pattern Matching
+	Description: Test operators, pattern matching, and regex.
+Content Type: text
+Duration: 450 
+Order: 3
+		Text Content :
+ # Conditional Statements Deep Dive
+
+## 1. [ ] vs [[ ]] - Critical Difference
+
+### [ ] (POSIX test)
+- POSIX compliant (portable to sh, dash, etc.)
+- Performs word splitting on variables
+- No pattern matching or regex
+- Requires careful quoting
+
+```bash
+if [ "$file" = "test.txt" ]; then
+  echo "Match"
+fi
+```
+
+**Problem:**
+```bash
+file="test file.txt"
+if [ $file = "test file.txt" ]; then  # ERROR: unary operator expected
+# Because $file expands to two arguments without quotes!
+```
+
+### [[ ]] (Bash extended test)
+- Bash-only (not POSIX)
+- NO word splitting
+- Supports pattern matching and regex
+- SAFER for variable handling
+- Recommended for all Bash scripts
+
+```bash
+file="test file.txt"
+if [[ $file = "test file.txt" ]]; then  # WORKS!
+  echo "Match"
+fi
+```
+
+---
+
+## 2. Pattern Matching with [[
+
+```bash
+# Glob patterns
+if [[ $filename == *.log ]]; then
+  echo "Log file"
+fi
+
+if [[ $filename == *.@(log|txt) ]]; then
+  echo "Log or text file"
+fi
+
+# Regex matching
+if [[ $name =~ ^[A-Z] ]]; then
+  echo "Starts with uppercase"
+fi
+
+if [[ $email =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+  echo "Valid email format"
+fi
+```
+
+---
+
+## 3. Comparison Operators
+
+**String Comparison:**
+```bash
+[[ $a = $b ]]       # Equality (= or ==, both work)
+[[ $a != $b ]]      # Inequality
+[[ $a < $b ]]       # Lexicographic less than (in [[, not [)
+[[ $a > $b ]]       # Lexicographic greater than
+[[ -z $a ]]         # String is empty
+[[ -n $a ]]         # String is not empty
+```
+
+**Numeric Comparison:**
+```bash
+[[ $a -eq $b ]]     # Equal
+[[ $a -ne $b ]]     # Not equal
+[[ $a -lt $b ]]     # Less than
+[[ $a -le $b ]]     # Less than or equal
+[[ $a -gt $b ]]     # Greater than
+[[ $a -ge $b ]]     # Greater than or equal
+```
+
+**File Tests:**
+```bash
+[[ -e $file ]]      # File exists
+[[ -f $file ]]      # Is regular file
+[[ -d $file ]]      # Is directory
+[[ -r $file ]]      # Is readable
+[[ -w $file ]]      # Is writable
+[[ -x $file ]]      # Is executable
+[[ -s $file ]]      # File exists and not empty
+[[ -L $file ]]      # Is symbolic link
+[[ $file1 -nt $file2 ]]  # file1 is newer than file2
+[[ $file1 -ot $file2 ]]  # file1 is older than file2
+```
+
+---
+
+## 4. Logical Operators
+
+```bash
+# Old POSIX way (with [ ])
+if [ $x -gt 5 -a $y -lt 10 ]; then  # -a = AND
+  echo "Both conditions true"
+fi
+
+if [ $x -gt 5 -o $y -lt 10 ]; then  # -o = OR
+  echo "At least one condition true"
+fi
+
+# Modern way (with [[ ]] - cleaner and safer)
+if [[ $x -gt 5 && $y -lt 10 ]]; then
+  echo "Both conditions true"
+fi
+
+if [[ $x -gt 5 || $y -lt 10 ]]; then
+  echo "At least one condition true"
+fi
+
+# Negation
+if [[ ! -f $file ]]; then
+  echo "File does not exist"
+fi
+```
+
+---
+
+## 5. Case Statements (Pattern Matching Alternative)
+
+```bash
+case $variable in
+  pattern1)
+    # commands
+    ;;
+  pattern2|pattern3)
+    # commands
+    ;;
+  *.txt)
+    # glob patterns work
+    ;;
+  *)
+    # default case
+    ;;
+esac
+```
+
+**Real Example:**
+```bash
+case $environment in
+  prod|production)
+    echo "Production deployment"
+    ;;
+  dev|development)
+    echo "Development deployment"
+    ;;
+  staging|stage)
+    echo "Staging deployment"
+    ;;
+  *)
+    echo "Unknown environment: $environment"
+    exit 1
+    ;;
+esac
+```
+
+---
+
+Class 9.1.4:
+	Title: Arrays & Data Structures
+	Description: Indexed arrays, associative arrays, and iteration patterns.
+Content Type: text
+Duration: 400 
+Order: 4
+		Text Content :
+ # Arrays in Bash
+
+## 1. Indexed Arrays
+
+```bash
+# Create array
+declare -a fruits=("apple" "banana" "orange")
+
+# OR
+fruits[0]="apple"
+fruits[1]="banana"
+fruits[2]="orange"
+
+# OR append
+fruits+=("grape")
+
+# Access single element
+echo "${fruits[0]}"  # apple
+
+# All elements
+echo "${fruits[@]}"  # apple banana orange
+echo "${fruits[*]}"  # apple banana orange
+
+# Array length
+echo "${#fruits[@]}"  # 4
+
+# Indices
+echo "${!fruits[@]}"  # 0 1 2 3
+
+# Slice
+echo "${fruits[@]:1:2}"  # banana orange (start:length)
+```
+
+**Iteration:**
+```bash
+# Iterate over elements
+for fruit in "${fruits[@]}"; do
+  echo "$fruit"
+done
+
+# Iterate with index
+for i in "${!fruits[@]}"; do
+  echo "$i: ${fruits[$i]}"
+done
+```
+
+---
+
+## 2. Associative Arrays (Bash 4.0+)
+
+**Declaration and Assignment:**
+```bash
+declare -A config
+
+config["database"]="postgres"
+config["port"]="5432"
+config["user"]="admin"
+config["host"]="localhost"
+
+# Access
+echo "${config["database"]}"  # postgres
+
+# All keys
+echo "${!config[@]}"  # database port user host
+
+# All values
+echo "${config[@]}"  # postgres 5432 admin localhost
+
+# Number of elements
+echo "${#config[@]}"  # 4
+```
+
+**Iteration:**
+```bash
+# Iterate over keys and values
+for key in "${!config[@]}"; do
+  echo "$key: ${config[$key]}"
+done
+```
+
+**Real-World Example:**
+```bash
+declare -A services
+services["nginx"]="80"
+services["postgres"]="5432"
+services["redis"]="6379"
+services["mysql"]="3306"
+
+for service in "${!services[@]}"; do
+  port=${services[$service]}
+  if nc -z localhost "$port"; then
+    echo "✓ $service is running on port $port"
+  else
+    echo "✗ $service is NOT running on port $port"
+  fi
+done
+```
+
+---
+
+## 3. Array Operations
+
+**Adding Elements:**
+```bash
+array+=("new element")
+array[5]="specific index"
+```
+
+**Removing Elements:**
+```bash
+unset array[2]           # Remove element at index 2
+unset array              # Remove entire array
+```
+
+**Copying Arrays:**
+```bash
+new_array=("${old_array[@]}")
+```
+
+**Sorting:**
+```bash
+IFS=$'\n' sorted=($(sort <<<"${array[*]}"))
+unset IFS
+```
+
+---
+
+## 4. Reading Into Arrays
+
+**From Command Output:**
+```bash
+# Read lines into array
+mapfile -t lines < file.txt
+
+# OR (older syntax)
+while IFS= read -r line; do
+  lines+=("$line")
+done < file.txt
+
+# From command
+mapfile -t users < <(cut -d: -f1 /etc/passwd)
+```
+
+**From String:**
+```bash
+IFS=',' read -ra array <<< "one,two,three"
+```
+
+---
+
+## 5. Production Use Cases
+
+**Configuration Management:**
+```bash
+declare -A regions
+regions[us-east-1]="ami-12345"
+regions[us-west-2]="ami-67890"
+regions[eu-west-1]="ami-abcde"
+
+region="$1"
+ami="${regions[$region]}"
+
+if [[ -z $ami ]]; then
+  echo "ERROR: Unknown region $region"
+  exit 1
+fi
+
+echo "Using AMI $ami for region $region"
+```
+
+**Batch Operations:**
+```bash
+servers=(
+  "web01.example.com"
+  "web02.example.com"
+  "web03.example.com"
+)
+
+for server in "${servers[@]}"; do
+  echo "Deploying to $server..."
+  ssh "$server" "cd /app && git pull && systemctl restart app"
+done
+```
+
+---
+
+Class 9.1.5:
+	Title: I/O Redirection & File Descriptors
+	Description: Streams, redirections, and inter-process communication.
+Content Type: text
+Duration: 500 
+Order: 5
+		Text Content :
+ # File Descriptors & I/O Redirection
+
+## 1. File Descriptors (0, 1, 2)
+
+Every process has three standard file descriptors:
+```
+0 = stdin  (standard input)
+1 = stdout (standard output)
+2 = stderr (standard error)
+```
+
+**Viewing Open File Descriptors:**
+```bash
+ls -l /proc/$$/fd
+# Shows all file descriptors for current shell
+```
+
+---
+
+## 2. Redirection Order Matters!
+
+```bash
+# CORRECT: Redirect stderr to where stdout is going
+command > file.log 2>&1
+# First: > file.log (redirect stdout to file.log)
+# Then: 2>&1 (redirect stderr to wherever stdout is pointing - file.log)
+
+# WRONG: Does something different
+command 2>&1 > file.log
+# First: 2>&1 (stderr to stdout, currently pointing to terminal)
+# Then: > file.log (stdout to file, but stderr still points to terminal)
+```
+
+**Modern Bash Syntax (Bash 4+):**
+```bash
+command &> file.log       # Redirect both stdout and stderr
+command &>> file.log      # Append both stdout and stderr
+```
+
+---
+
+## 3. Common I/O Patterns
+
+```bash
+# Suppress all output
+command > /dev/null 2>&1
+
+# Capture stderr separately
+command 2> errors.log > output.log
+
+# Append instead of overwrite
+command >> file.log 2>&1
+
+# Discard stderr, keep stdout
+command 2> /dev/null
+
+# Discard stdout, keep stderr
+command > /dev/null
+
+# Swap stdout and stderr
+command 3>&1 1>&2 2>&3
+# 3>&1 creates fd 3 pointing to stdout
+# 1>&2 redirects stdout to stderr
+# 2>&3 redirects stderr to fd 3 (original stdout)
+```
+
+---
+
+## 4. Here Documents & Here Strings
+
+**Here Document (<<):**
+```bash
+cat << EOF
+This is a here document
+Variables expanded: $HOME
+Multiple lines supported
+EOF
+
+# Disable variable expansion with quoted delimiter
+cat << 'EOF'
+$HOME not expanded
+Literal text: $USER
+EOF
+
+# Indented here document (strips leading tabs)
+cat <<- EOF
+	This line has a leading tab
+	But it will be stripped
+EOF
+```
+
+**Here String (<<<):**
+```bash
+# Simpler than here document for single input
+grep "pattern" <<< "some input string"
+
+# Multi-line with newlines
+while read line; do
+  echo "Line: $line"
+done <<< $'line1\nline2\nline3'
+```
+
+**Production Examples:**
+```bash
+# Generate config file
+cat > /etc/app/config.yml << EOF
+database:
+  host: ${DB_HOST}
+  port: ${DB_PORT}
+  name: ${DB_NAME}
+logging:
+  level: ${LOG_LEVEL:-info}
+EOF
+
+# Execute SQL
+mysql -u root << EOF
+CREATE DATABASE IF NOT EXISTS app_db;
+GRANT ALL ON app_db.* TO 'app_user'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+```
+
+---
+
+## 5. Reading Files Properly
+
+**WRONG:**
+```bash
+count=0
+cat file.log | while read line; do
+  count=$((count + 1))  # Lost! Subshell doesn't update parent
+done
+echo $count  # Empty! count is still 0
+```
+
+**RIGHT:**
+```bash
+count=0
+while IFS= read -r line; do
+  count=$((count + 1))
+done < file.log
+echo $count  # Works! count is updated
+```
+
+**Why?** `cat file | while` creates a subshell; `< file` redirects in current shell.
+
+**Reading with Delimiter:**
+```bash
+# Read CSV
+while IFS=',' read -r col1 col2 col3; do
+  echo "Column 1: $col1"
+  echo "Column 2: $col2"
+  echo "Column 3: $col3"
+done < data.csv
+```
+
+---
+
+## 6. Named Pipes (FIFOs)
+
+```bash
+# Create named pipe
+mkfifo /tmp/mypipe
+
+# Terminal 1: Write to pipe
+echo "data" > /tmp/mypipe
+
+# Terminal 2: Read from pipe
+cat < /tmp/mypipe
+
+# Process substitution (Bash creates temporary pipes automatically)
+diff <(command1) <(command2)
+```
+
+**Production Example:**
+```bash
+# Stream processing
+mkfifo /tmp/logpipe
+
+# Producer
+tail -f /var/log/app.log > /tmp/logpipe &
+
+# Consumer
+while read line; do
+  if [[ $line =~ ERROR ]]; then
+    echo "$line" | mail -s "Error Alert" ops@company.com
+  fi
+done < /tmp/logpipe
+```
+
+---
+
+## 7. File Descriptor Manipulation
+
+**Opening Custom File Descriptors:**
+```bash
+# Open file for reading on fd 3
+exec 3< input.txt
+
+# Read from fd 3
+read line <&3
+
+# Close fd 3
+exec 3<&-
+
+# Open file for writing on fd 4
+exec 4> output.txt
+
+# Write to fd 4
+echo "data" >&4
+
+# Close fd 4
+exec 4>&-
+```
+
+**Saving and Restoring File Descriptors:**
+```bash
+# Save current stdout
+exec 3>&1
+
+# Redirect stdout to file
+exec > output.log
+
+# Do work (all output goes to file)
+echo "logged"
+
+# Restore original stdout
+exec 1>&3
+
+# Close backup fd
+exec 3>&-
+```
+
+---
+
+Class 9.1.6:
+	Title: Error Handling & Exit Codes
+	Description: Exit codes, strict mode, signal handling, and defensive programming.
+Content Type: text
+Duration: 500 
+Order: 6
+		Text Content :
+ # Error Handling in Shell Scripts
+
+## 1. Exit Codes - The Foundation
+
+Every command returns an exit code (0 = success, non-zero = failure).
+
+```bash
+$ ls /tmp
+$ echo $?        # 0 (success)
+
+$ ls /nonexistent
+$ echo $?        # 2 (failure)
+
+$ false
+$ echo $?        # 1
+
+$ true
+$ echo $?        # 0
+```
+
+**Setting Exit Codes in Scripts:**
+```bash
+#!/bin/bash
+
+if [[ ! -f $1 ]]; then
+  echo "Error: File not found" >&2
+  exit 1
+fi
+
+# Success
+exit 0
+```
+
+**Standard Exit Codes:**
+```
+0   = Success
+1   = General errors
+2   = Misuse of shell command
+126 = Command cannot execute
+127 = Command not found
+128 = Invalid exit argument
+130 = Terminated by Ctrl+C (128 + 2)
+```
+
+---
+
+## 2. Strict Mode (Production Requirement)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# -e (errexit): Exit on first error
+# -u (nounset): Error on undefined variables
+# -o pipefail: Fail if any command in pipe fails
+```
+
+**Without strict mode (DANGEROUS):**
+```bash
+#!/bin/bash
+database=$DATABASE_URL  # If undefined, silently becomes empty
+connect_db              # Might hang or fail silently
+rm -rf /important/*     # Dangerous if vars are empty!
+```
+
+**With strict mode (SAFE):**
+```bash
+#!/bin/bash
+set -euo pipefail
+database=$DATABASE_URL  # Errors immediately: DATABASE_URL is undefined
+```
+
+**Production Script Template:**
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Script name for error messages
+readonly SCRIPT_NAME=$(basename "$0")
+
+# Error handler
+err() {
+  echo "[ERROR] $*" >&2
+}
+
+# Usage function
+usage() {
+  cat << EOF
+Usage: $SCRIPT_NAME [OPTIONS]
+
+Options:
+  -f FILE    Input file
+  -v         Verbose mode
+  -h         Show this help
+EOF
+  exit 1
+}
+
+# Main script logic here
+```
+
+---
+
+## 3. When set -e Does NOT Exit
+
+```bash
+set -e
+
+# Does NOT exit (conditional context)
+if false; then
+  echo "not printed"
+fi
+echo "Script continues"  # This runs
+
+# Does NOT exit (|| operator)
+false || echo "handled"
+echo "Script continues"  # This runs
+
+# Does NOT exit (&& operator)
+false && echo "not printed"
+echo "Script continues"  # This runs
+
+# Does NOT exit (part of test)
+[[ false ]] || echo "handled"
+echo "Script continues"  # This runs
+```
+
+**Forcing Failure in Conditionals:**
+```bash
+set -e
+
+if ! some_command; then
+  echo "Command failed" >&2
+  exit 1  # Explicit exit required
+fi
+```
+
+---
+
+## 4. Signal Handling with trap
+
+```bash
+#!/bin/bash
+
+# Cleanup function
+cleanup() {
+  echo "Cleaning up..."
+  rm -f "$tempfile"
+  # Kill background jobs
+  jobs -p | xargs -r kill
+}
+
+# Cleanup on ANY exit
+trap cleanup EXIT
+
+# Handle Ctrl+C
+trap 'echo "Interrupted!"; exit 130' INT
+
+# Handle SIGTERM
+trap 'echo "Terminating..."; cleanup; exit 143' TERM
+
+tempfile=$(mktemp)
+# If script exits (for any reason), cleanup runs automatically
+```
+
+**Multiple Signal Handling:**
+```bash
+trap 'cleanup_function' EXIT INT TERM
+```
+
+**Ignoring Signals:**
+```bash
+# Ignore Ctrl+C
+trap '' INT
+
+# Restore default behavior
+trap - INT
+```
+
+**Production Example:**
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Lock file to prevent concurrent execution
+LOCKFILE="/var/lock/$(basename "$0").lock"
+
+# Cleanup function
+cleanup() {
+  rm -f "$LOCKFILE"
+}
+
+# Ensure cleanup on exit
+trap cleanup EXIT
+
+# Check if already running
+if [[ -f $LOCKFILE ]]; then
+  echo "Script is already running" >&2
+  exit 1
+fi
+
+# Create lock
+touch "$LOCKFILE"
+
+# Main script work here
+# ...
+```
+
+---
+
+## 5. Defensive Programming Patterns
+
+**Input Validation:**
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Check argument count
+if [[ $# -lt 1 ]]; then
+  echo "Error: Missing required argument" >&2
+  echo "Usage: $0 <filename>" >&2
+  exit 1
+fi
+
+file="$1"
+
+# Validate file exists
+if [[ ! -f $file ]]; then
+  echo "Error: File not found: $file" >&2
+  exit 1
+fi
+
+# Validate file is readable
+if [[ ! -r $file ]]; then
+  echo "Error: File not readable: $file" >&2
+  exit 1
+fi
+```
+
+**Safe Command Execution:**
+```bash
+# Check if command exists
+if ! command -v kubectl &> /dev/null; then
+  echo "Error: kubectl not found" >&2
+  exit 1
+fi
+
+# Check command succeeded
+if ! kubectl get pods; then
+  echo "Error: Failed to get pods" >&2
+  exit 1
+fi
+```
+
+**Fail-Safe Defaults:**
+```bash
+# Use default if variable unset
+environment="${ENVIRONMENT:-development}"
+debug="${DEBUG:-false}"
+
+# Require variable to be set
+database="${DATABASE:?ERROR: DATABASE variable required}"
+```
+
+**Dry-Run Mode:**
+```bash
+DRY_RUN="${DRY_RUN:-false}"
+
+run_command() {
+  if [[ $DRY_RUN == "true" ]]; then
+    echo "[DRY RUN] Would execute: $*"
+  else
+    "$@"
+  fi
+}
+
+# Usage
+run_command rm -rf /dangerous/path
+```
+
+---
+
+## 6. Error Logging and Debugging
+
+**Structured Error Messages:**
+```bash
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+error() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2
+}
+
+warn() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] [WARN] $*" >&2
+}
+
+# Usage
+log "Starting deployment"
+warn "Disk space low"
+error "Deployment failed"
+```
+
+**Enabling Debug Mode:**
+```bash
+# Add to script
+if [[ ${DEBUG:-false} == "true" ]]; then
+  set -x  # Enable trace
+fi
+
+# Run with debug
+DEBUG=true ./script.sh
+```
+
+---
+
+## 7. Retry Logic
+
+```bash
+retry() {
+  local max_attempts=$1
+  shift
+  local attempt=1
+  
+  until "$@"; do
+    if [[ $attempt -ge $max_attempts ]]; then
+      echo "Command failed after $max_attempts attempts" >&2
+      return 1
+    fi
+    echo "Attempt $attempt failed, retrying..." >&2
+    ((attempt++))
+    sleep $((attempt * 2))  # Exponential backoff
+  done
+}
+
+# Usage
+retry 5 curl -f https://api.example.com/health
+```
+
+---
+
+Class 9.1.7:
+	Title: Script Debugging & Testing
+	Description: Debugging techniques, syntax checking, linting, and testing frameworks.
+Content Type: text
+Duration: 400 
+Order: 7
+		Text Content :
+ # Debugging & Testing Shell Scripts
+
+## 1. Syntax Checking
+
+```bash
+# Check syntax without running
+bash -n script.sh
+
+# Will catch:
+# - Missing quotes
+# - Unclosed braces
+# - Invalid syntax
+
+# Example error:
+# script.sh: line 10: syntax error: unexpected end of file
+```
+
+**In Editor:**
+```bash
+# Many editors support bash syntax checking
+vim script.sh     # :set syntax=bash
+code script.sh    # VS Code with ShellCheck extension
+```
+
+---
+
+## 2. Execution Tracing
+
+```bash
+# Run with full execution trace
+bash -x script.sh
+
+# Output shows each command before execution:
+# + echo 'Starting script'
+# Starting script
+# + [[ -f config.txt ]]
+# + source config.txt
+```
+
+**Partial Tracing:**
+```bash
+#!/bin/bash
+
+# Normal execution
+echo "Starting"
+
+# Enable tracing for specific section
+set -x
+command1
+command2
+set +x
+
+# Back to normal
+echo "Done"
+```
+
+**Custom Trace Prompt:**
+```bash
+# Show file, line number, and function
+export PS4='+ [${BASH_SOURCE}:${LINENO}] ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+bash -x script.sh
+
+# Output:
+# + [script.sh:10] main(): echo 'Starting'
+# + [script.sh:15] process_file(): [[ -f data.txt ]]
+```
+
+---
+
+## 3. ShellCheck (Static Analysis)
+
+**Installation:**
+```bash
+# Ubuntu/Debian
+apt-get install shellcheck
+
+# macOS
+brew install shellcheck
+
+# Or use online: https://www.shellcheck.net
+```
+
+**Usage:**
+```bash
+shellcheck script.sh
+
+# Example output:
+# In script.sh line 5:
+# if [ $file = "test.txt" ]; then
+#      ^-- SC2086: Double quote to prevent globbing
+#
+# In script.sh line 10:
+# cd $dir
+#    ^-- SC2164: Use 'cd ... || exit' in case cd fails
+```
+
+**Common Issues Caught:**
+- Unquoted variables
+- Undefined variables
+- Incorrect conditionals `[ ]` vs `[[ ]]`
+- Missing error handling
+- Deprecated syntax
+
+**Ignore Specific Warnings:**
+```bash
+# Disable specific check for one line
+# shellcheck disable=SC2086
+command $unquoted_var
+
+# Disable at file level
+# shellcheck disable=SC2086,SC2181
+```
+
+**CI/CD Integration:**
+```yaml
+# .gitlab-ci.yml
+shellcheck:
+  script:
+    - find . -name "*.sh" -exec shellcheck {} \;
+```
+
+---
+
+## 4. Testing with BATS (Bash Automated Testing System)
+
+**Installation:**
+```bash
+# Clone bats-core
+git clone https://github.com/bats-core/bats-core.git
+cd bats-core
+./install.sh /usr/local
+
+# Or via package manager
+apt-get install bats
+```
+
+**Basic Test File (test.bats):**
+```bash
+#!/usr/bin/env bats
+
+# Test that script exists
+@test "script file exists" {
+  [ -f "./script.sh" ]
+}
+
+# Test script execution
+@test "script runs successfully" {
+  run ./script.sh
+  [ "$status" -eq 0 ]
+}
+
+# Test script output
+@test "script outputs correct message" {
+  run ./script.sh
+  [ "$output" = "Success" ]
+}
+
+# Test with arguments
+@test "script handles missing argument" {
+  run ./script.sh
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "Error: Missing argument" ]]
+}
+```
+
+**Running Tests:**
+```bash
+# Run all tests
+bats test.bats
+
+# Run specific test
+bats -f "script runs" test.bats
+
+# Verbose output
+bats -t test.bats
+```
+
+**Advanced Test Example:**
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  # Runs before each test
+  export TEST_DIR="$(mktemp -d)"
+  export TEST_FILE="$TEST_DIR/test.txt"
+  echo "test data" > "$TEST_FILE"
+}
+
+teardown() {
+  # Runs after each test
+  rm -rf "$TEST_DIR"
+}
+
+@test "processes file correctly" {
+  run ./script.sh "$TEST_FILE"
+  [ "$status" -eq 0 ]
+  [ -f "$TEST_DIR/output.txt" ]
+}
+
+@test "handles non-existent file" {
+  run ./script.sh "/nonexistent"
+  [ "$status" -eq 1 ]
+  [[ "$output" =~ "File not found" ]]
+}
+```
+
+---
+
+## 5. Manual Testing Techniques
+
+**Test with Edge Cases:**
+```bash
+# Empty input
+./script.sh ""
+
+# Spaces in arguments
+./script.sh "file name with spaces.txt"
+
+# Special characters
+./script.sh "file\$name.txt"
+
+# Very long input
+./script.sh "$(printf 'a%.0s' {1..10000})"
+
+# Stdin redirection
+echo "test" | ./script.sh
+
+# Non-existent paths
+./script.sh /nonexistent/path
+```
+
+**Environment Testing:**
+```bash
+# Test with minimal environment
+env -i bash ./script.sh
+
+# Test with specific variable unset
+unset DATABASE_URL
+./script.sh
+
+# Test with specific variable set
+DATABASE_URL="test" ./script.sh
+```
+
+---
+
+## 6. Debugging Techniques
+
+**Add Debug Statements:**
+```bash
+debug() {
+  if [[ ${DEBUG:-false} == "true" ]]; then
+    echo "[DEBUG] $*" >&2
+  fi
+}
+
+# Usage
+debug "Processing file: $filename"
+debug "Variable state: VAR=$VAR"
+
+# Run with debug
+DEBUG=true ./script.sh
+```
+
+**Inspect Variable State:**
+```bash
+# Print all variables
+declare -p
+
+# Print specific variable
+declare -p myvar
+
+# Print all functions
+declare -F
+
+# Print function definition
+declare -f function_name
+```
+
+**Step-Through Debugging:**
+```bash
+#!/bin/bash
+
+# Poor man's debugger
+set -x  # Enable trace
+trap 'read -p "Press enter to continue..."' DEBUG
+# Each command waits for enter key
+```
+
+---
+
+## 7. Portability Testing
+
+**Test Across Shells:**
+```bash
+# Test with sh (POSIX)
+sh script.sh
+
+# Test with bash
+bash script.sh
+
+# Test with dash (faster sh alternative)
+dash script.sh
+
+# Check for bash-specific features
+checkbashisms script.sh
+```
+
+**Test on Different Systems:**
+```bash
+# Use Docker for testing
+docker run --rm -v "$PWD:/scripts" ubuntu:20.04 bash /scripts/script.sh
+docker run --rm -v "$PWD:/scripts" alpine:latest sh /scripts/script.sh
+docker run --rm -v "$PWD:/scripts" centos:7 bash /scripts/script.sh
+```
+
+---
+
+## 8. Common Debugging Patterns
+
+**Find Where Script Fails:**
+```bash
+#!/bin/bash
+set -x
+
+# Will show exactly which command fails
+command1
+command2
+command3  # If this fails, you'll see it
+```
+
+**Check Variable Expansion:**
+```bash
+# Print variable as script sees it
+printf '%s\n' "$variable"
+
+# Check for whitespace
+printf '%q\n' "$variable"
+```
+
+**Verify Command Availability:**
+```bash
+for cmd in git docker kubectl; do
+  if ! command -v "$cmd" &> /dev/null; then
+    echo "Missing: $cmd" >&2
+  fi
+done
+```
+
+---
+
+Class 9.1.8:
+	Title: Production Bash Patterns & Best Practices
+	Description: Real-world patterns, linting, portability, and maintainability.
+Content Type: text
+Duration: 450 
+Order: 8
+		Text Content :
+ # Production Bash: Beyond One-Liners
+
+## 1. The Philosophy: Bash is a Programming Language
+
+Anyone can write `mkdir test`. Senior DevOps engineers write **maintainable, safe, reusable Bash**.
+
+That means:
+- Functions instead of copy-paste
+- Explicit error handling
+- Predictable behavior in failure scenarios
+- Comprehensive testing
+- Clear documentation
+
+**Treat Bash as a programming language, not a shell toy.**
+
+---
+
+## 2. Functions & Modularity
+
+### Function Basics
 
 ```bash
 my_function() {
     local my_var="value"
     echo "$my_var"
 }
+
+# Call function
+my_function
 ```
 
+### Scope Rules - CRITICAL
+
+**Bash variables are global by default!**
+
+```bash
+# WRONG - Creates global variable
+my_function() {
+    result="value"  # Global!
+}
+
+my_function
+echo $result  # "value" - pollutes global scope
+
+# RIGHT - Use local
+my_function() {
+    local result="value"  # Local only
+}
+
+my_function
+echo $result  # Empty - doesn't leak
+```
 
 ### Return Values
 
-* Bash functions return **exit codes**, not data.
-* Exit codes range from `0–255`.
-
-  * `0` → success
-  * non-zero → failure
-
-**To return data:**
+Bash functions return **exit codes**, not data.
 
 ```bash
-result=$(my_function)
+# Return exit code
+check_file() {
+    [[ -f $1 ]] && return 0 || return 1
+}
+
+# Usage
+if check_file "data.txt"; then
+    echo "File exists"
+fi
+
+# Return data via stdout
+get_timestamp() {
+    date +%s
+}
+
+# Usage
+timestamp=$(get_timestamp)
+```
+
+### Advanced Function Patterns
+
+```bash
+# Function with default parameters
+greet() {
+    local name="${1:-World}"
+    echo "Hello, $name!"
+}
+
+# Function with validation
+process_file() {
+    local file="$1"
+    
+    # Validate input
+    if [[ -z $file ]]; then
+        echo "Error: Filename required" >&2
+        return 1
+    fi
+    
+    if [[ ! -f $file ]]; then
+        echo "Error: File not found: $file" >&2
+        return 1
+    fi
+    
+    # Process file
+    # ...
+}
+
+# Function with multiple return values
+get_user_info() {
+    local username="$1"
+    
+    # Return multiple values via stdout (one per line)
+    echo "John Doe"
+    echo "john@example.com"
+    echo "Engineer"
+}
+
+# Usage
+IFS=$'\n' read -r name email role < <(get_user_info "johndoe")
 ```
 
 ---
 
-## 3. Arrays (Indexed & Associative)
+## 3. Argument Parsing with getopts
 
-### Indexed Arrays
+**Never manually parse arguments using `$1`, `$2`.**
 
-Ordered lists.
+### Why getopts?
+
+- Standard flag parsing (`-f file`, `-v`)
+- Supports combined flags (`-vf`)
+- Cleaner, safer, predictable behavior
+- POSIX compliant
 
 ```bash
-servers=("web01" "web02" "web03")
-echo "${servers[0]}"
+#!/bin/bash
+
+usage() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Options:
+    -f FILE     Input file (required)
+    -o FILE     Output file (optional)
+    -v          Verbose mode
+    -h          Show this help
+
+Example:
+    $0 -f input.txt -o output.txt -v
+EOF
+    exit 1
+}
+
+# Initialize variables
+file=""
+output=""
+verbose=false
+
+# Parse options
+while getopts ":f:o:vh" opt; do
+    case $opt in
+        f) file="$OPTARG" ;;
+        o) output="$OPTARG" ;;
+        v) verbose=true ;;
+        h) usage ;;
+        :) echo "Option -$OPTARG requires an argument" >&2; exit 1 ;;
+        \?) echo "Invalid option: -$OPTARG" >&2; exit 1 ;;
+    esac
+done
+
+# Shift past the parsed options
+shift $((OPTIND - 1))
+
+# Validate required arguments
+if [[ -z $file ]]; then
+    echo "Error: -f FILE is required" >&2
+    usage
+fi
+
+# Main script logic
+[[ $verbose == "true" ]] && echo "Processing file: $file"
 ```
 
-### Associative Arrays (Dictionaries)
+---
 
-Key-value mapping (Bash 4+).
-Used heavily in real-world scripts (region → AMI, env → config).
+## 4. Portability: Bash vs. sh
+
+### When to Use What
+
+**Use `/bin/sh` (POSIX) when:**
+- Writing for Alpine Linux / Docker (no bash installed)
+- Maximum portability required
+- Minimal dependencies needed
+- Script is simple
+
+**Use `/bin/bash` when:**
+- Need advanced features (arrays, `[[`, etc.)
+- Writing for known environment
+- Readability/maintainability matters
+
+### POSIX Limitations
 
 ```bash
-declare -A regions
-regions[us-east-1]="ami-12345"
-regions[eu-west-1]="ami-67890"
+# These DON'T work in POSIX sh:
+[[ ]]              # Use [ ] instead
+declare -A         # No associative arrays
+${array[@]}        # No arrays
+$'\n'              # Use printf '\n' instead
+{1..10}            # Use seq instead
 ```
 
-**Iterating over keys (Interview Favorite):**
+### Writing Portable Scripts
 
 ```bash
-for key in "${!regions[@]}"; do
-    echo "$key -> ${regions[$key]}"
+#!/bin/sh
+# POSIX-compliant
+
+# No [[ ]], use [ ]
+if [ -f "$file" ]; then
+    echo "File exists"
+fi
+
+# No arrays, use positional parameters or variables
+set -- "item1" "item2" "item3"
+for item in "$@"; do
+    echo "$item"
+done
+
+# No {1..10}, use seq
+for i in $(seq 1 10); do
+    echo "$i"
 done
 ```
 
 ---
 
-## 4. Error Handling (Strict Mode)
+## 5. Code Organization & Structure
 
-By default, Bash **ignores failures** and keeps running.
-This is unacceptable in CI/CD and infra automation.
-
-### Mandatory Safety Header
-
-Put this at the top of every serious script:
+### File Structure
 
 ```bash
+#!/bin/bash
 set -euo pipefail
-```
 
-* `set -e`
-  Exit immediately if any command fails.
+#############################################################################
+# Script Name: deploy.sh
+# Description: Deploy application to production
+# Author: DevOps Team
+# Date: 2024-01-29
+#############################################################################
 
-* `set -u`
-  Fail on undefined variables (prevents destructive commands).
+#############################################################################
+# CONFIGURATION
+#############################################################################
 
-* `set -o pipefail`
-  Fail pipelines if **any** command inside fails.
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly APP_NAME="myapp"
+readonly DEPLOY_USER="deploy"
 
-**Example Bug Without `pipefail`:**
+#############################################################################
+# FUNCTIONS
+#############################################################################
 
-```bash
-false | true   # Script continues unless pipefail is set
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2
+}
+
+usage() {
+    cat << EOF
+Usage: $SCRIPT_NAME [OPTIONS]
+
+Deploy application to production.
+
+Options:
+    -e ENV      Environment (dev|staging|prod)
+    -v VERSION  Version to deploy
+    -h          Show this help
+
+Example:
+    $SCRIPT_NAME -e prod -v 1.2.3
+EOF
+    exit 1
+}
+
+# More functions...
+
+#############################################################################
+# MAIN
+#############################################################################
+
+main() {
+    local environment=""
+    local version=""
+    
+    # Parse arguments
+    while getopts ":e:v:h" opt; do
+        case $opt in
+            e) environment="$OPTARG" ;;
+            v) version="$OPTARG" ;;
+            h) usage ;;
+            *) usage ;;
+        esac
+    done
+    
+    # Validate
+    [[ -z $environment ]] && { error "Environment required"; usage; }
+    [[ -z $version ]] && { error "Version required"; usage; }
+    
+    # Main logic
+    log "Starting deployment to $environment"
+    log "Version: $version"
+    
+    # ... deployment steps ...
+    
+    log "Deployment complete"
+}
+
+# Run main function
+main "$@"
 ```
 
 ---
 
-## 5. Argument Parsing (`getopts`)
+## 6. Best Practices Summary
 
-Never manually parse arguments using `$1`, `$2`.
+| Practice | Why | Example |
+|----------|-----|---------|
+| `set -euo pipefail` | Fail fast on errors | Start every script with this |
+| Use `local` in functions | Prevent variable pollution | `local myvar="value"` |
+| Quote variables | Prevent word splitting | `"$var"` not `$var` |
+| Use `[[` over `[` | Safer, more features | `if [[ $x == "test" ]]` |
+| Use functions | Code reuse, clarity | Break scripts into functions |
+| Use `getopts` | Standard argument parsing | Don't manually parse `$1` |
+| ShellCheck | Catch bugs early | Run in CI/CD |
+| BATS testing | Automated testing | Test critical scripts |
+| Error handling | Graceful failures | Check exit codes, use `trap` |
+| Logging | Debugging, audit trail | Timestamp all output |
 
-### Why `getopts`
+---
 
-* Standard flag parsing (`-f file`, `-v`)
-* Supports combined flags (`-vf`)
-* Cleaner, safer, predictable behavior
+## 7. Anti-Patterns to Avoid
 
 ```bash
-while getopts ":f:v" opt; do
-  case $opt in
-    f) file="$OPTARG" ;;
-    v) verbose=true ;;
-    *) echo "Invalid option" ;;
-  esac
+# WRONG: Unquoted variables
+rm -rf $dir/*  # If $dir is empty, deletes everything in current dir!
+
+# RIGHT:
+[[ -n $dir ]] && rm -rf "${dir:?}/"*
+
+# WRONG: Ignoring errors
+cp file.txt /dest
+rm file.txt  # If cp failed, original is deleted!
+
+# RIGHT:
+cp file.txt /dest && rm file.txt
+
+# WRONG: Using cat unnecessarily
+cat file.txt | grep pattern
+
+# RIGHT:
+grep pattern file.txt
+
+# WRONG: Testing strings with -n/-z without quotes
+if [ -n $var ]; then  # Always true if $var expands!
+
+# RIGHT:
+if [[ -n $var ]]; then  # Safe
+
+# WRONG: Parsing ls output
+for file in $(ls *.txt); do
+
+# RIGHT:
+for file in *.txt; do
+    [[ -e $file ]] || continue  # Handle no matches
+```
+
+---
+
+## 8. Production Script Template
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Script metadata
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly VERSION="1.0.0"
+
+# Logging functions
+log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] $*"; }
+error() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2; }
+die() { error "$*"; exit 1; }
+
+# Cleanup
+cleanup() {
+    # Cleanup logic here
+    [[ -n ${TEMP_DIR:-} ]] && rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+# Usage
+usage() {
+    cat << EOF
+$SCRIPT_NAME v$VERSION
+
+Usage: $SCRIPT_NAME [OPTIONS]
+
+Options:
+    -h    Show this help
+
+EOF
+    exit 1
+}
+
+# Parse arguments
+while getopts ":h" opt; do
+    case $opt in
+        h) usage ;;
+        *) usage ;;
+    esac
 done
+
+# Main logic
+main() {
+    log "Starting $SCRIPT_NAME"
+    
+    # Create temp directory
+    TEMP_DIR=$(mktemp -d) || die "Failed to create temp directory"
+    
+    # Your logic here
+    
+    log "Completed successfully"
+}
+
+# Execute
+main "$@"
 ```
-
----
-
-## Bash Concepts Summary
-
-| Concept             | Purpose                        | Production Importance |
-| ------------------- | ------------------------------ | --------------------- |
-| Functions           | Reuse & structure              | High                  |
-| `local` variables   | Prevent side effects           | Critical              |
-| Exit codes          | Control flow & error detection | Critical              |
-| Indexed arrays      | Ordered data                   | Medium                |
-| Associative arrays  | Key-value mapping              | High                  |
-| `set -euo pipefail` | Script safety                  | Mandatory             |
-| `getopts`           | Argument parsing               | High                  |
 
 ---
 
 ### Interview Reality Check
 
-If you cannot explain **why** `set -euo pipefail` exists,
-you are not ready to write production Bash.
+If you cannot explain **why** `set -euo pipefail` exists, you are not ready to write production Bash.
 
-
-
----
-
-Class 9.1.2:
-	Title: Shell Scripting Best Practices
-	Description: Linting, portability, and testing.
-Content Type: text
-Duration: 400 
-Order: 2
-		Text Content :
- # Professional Shell Scripting
-
-## 1. ShellCheck (Linting)
-Never rely on your eyes to catch bugs.
-* **ShellCheck:** A static analysis tool that finds common bugs and security issues.
-    * *Example:* It will warn you if you forget to quote a variable: `rm $file` (Dangerous if the filename has spaces) vs `rm "$file"` (Safe).
-* *Interview Tip:* Mentioning "I run ShellCheck in my CI pipeline" is a massive green flag for hiring managers.
+If your script doesn't have functions, error handling, or logging, it's not production-ready.
 
 ---
 
-## 2. Defensive Programming
-Assume the user (or the environment) will try to break your script.
-* **Input Validation:** Check arguments immediately at the start.
-    ```bash
-    if [[ -z "${1-}" ]]; then
-        echo "Error: Missing argument."
-        exit 1
-    fi
-    ```
-* **Cleanup with `trap`:** If your script creates temporary files, they must be deleted even if the script crashes or the user hits `Ctrl+C`.
-    ```bash
-    temp_file=$(mktemp)
-    trap 'rm -f "$temp_file"' EXIT
-    # ... do work ...
-    # File is automatically deleted when script exits
-    ```
-
----
-
-## 3. Portability (Bash vs. Sh)
-* **`/bin/sh`:** The POSIX standard. Runs on everything (Alpine, Debian, Old Unix). Limited features (no arrays, no `[[ ]]`).
-* **`/bin/bash`:** The modern standard. Rich features.
-* *Best Practice:* If writing for a lightweight Docker container (Alpine), utilize `sh`. For general automation where size doesn't matter, explicit `bash` is safer and easier.
-
----
-
-## 4. Testing (BATS)
-Yes, you can unit test Bash scripts.
-* **bats-core:** A testing framework for Bash.
-* *Scenario:* You write a test that runs your script with specific flags and asserts that the output matches a regex or that the exit code is 0.
-
----
-
-Topic 9.2:
+Topic 9.2: 
 Title: Python for DevOps
 Order: 2
 
+---
+
 Class 9.2.1:
-	Title: Python Fundamentals for Automation
-	Description: JSON parsing, Requests, and CLI tools.
+Title: Python Fundamentals for Automation
+Description: JSON parsing, API requests, CLI tools, and file operations.
 Content Type: text
-Duration: 450 
+Duration: 450
 Order: 1
-		Text Content :
- # Python: The Glue of the Cloud
+Text Content :
+
+# Python: The Glue of the Cloud
 
 ## 1. Why Python over Bash?
+
 Bash is great for *running commands*, but Python is superior for *processing data*.
-* *Scenario:* "Parse this 1GB JSON log file and find the IP with the most errors."
-    * **Bash:** Complex `sed`/`awk` chains. Hard to read, hard to debug.
-    * **Python:** Standard `json` library. Readable, testable, and robust.
+
+**Scenario:** "Parse this 1GB JSON log file and find the IP with the most errors."
+
+- **Bash:** Complex `sed`/`awk` chains. Hard to read, hard to debug.
+- **Python:** Standard `json` library. Readable, testable, and robust.
+
+**When to Use Each:**
+
+| Task | Use Bash | Use Python |
+|------|----------|------------|
+| Run system commands | ✓ | |
+| Process text files | ✓ | ✓ |
+| Parse JSON/YAML | | ✓ |
+| Call REST APIs | | ✓ |
+| Complex data structures | | ✓ |
+| Error handling | | ✓ |
+| Testing | | ✓ |
 
 ---
 
 ## 2. File I/O & Parsing
-* **JSON/YAML:** The native language of Cloud Configs.
-    * Use `yaml.safe_load()` (PyYAML) to read Kubernetes manifests safely.
-    * Use `json.dump()` to generate valid config files programmatically.
-* **CSV:** Python's `csv` module handles quoting and delimiters automatically, preventing common parsing errors.
+
+### JSON (Native to Cloud Configs)
+
+```python
+import json
+
+# Read JSON file
+with open('config.json', 'r') as f:
+    config = json.load(f)
+
+# Access data
+database_url = config['database']['url']
+port = config['database']['port']
+
+# Write JSON file
+data = {
+    'environment': 'production',
+    'version': '1.2.3',
+    'services': ['web', 'api', 'worker']
+}
+
+with open('output.json', 'w') as f:
+    json.dump(data, f, indent=2)
+
+# Parse JSON string
+json_string = '{"key": "value"}'
+data = json.loads(json_string)
+
+# Generate JSON string
+json_string = json.dumps(data, indent=2)
+```
+
+### YAML (Kubernetes, Ansible)
+
+```python
+import yaml
+
+# Read YAML file (safe_load prevents code execution)
+with open('deployment.yaml', 'r') as f:
+    deployment = yaml.safe_load(f)
+
+# Access nested data
+replicas = deployment['spec']['replicas']
+
+# Write YAML file
+data = {
+    'apiVersion': 'v1',
+    'kind': 'Service',
+    'metadata': {
+        'name': 'my-service'
+    },
+    'spec': {
+        'ports': [
+            {'port': 80, 'targetPort': 8080}
+        ]
+    }
+}
+
+with open('service.yaml', 'w') as f:
+    yaml.dump(data, f, default_flow_style=False)
+```
+
+### CSV (Log Processing)
+
+```python
+import csv
+
+# Read CSV
+with open('data.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        print(row['name'], row['email'])
+
+# Write CSV
+with open('output.csv', 'w', newline='') as f:
+    fieldnames = ['name', 'email', 'role']
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    
+    writer.writeheader()
+    writer.writerow({'name': 'John', 'email': 'john@example.com', 'role': 'Engineer'})
+```
+
+### File Operations
+
+```python
+# Read entire file
+with open('file.txt', 'r') as f:
+    content = f.read()
+
+# Read line by line (memory efficient)
+with open('large_file.log', 'r') as f:
+    for line in f:
+        if 'ERROR' in line:
+            print(line.strip())
+
+# Write file
+with open('output.txt', 'w') as f:
+    f.write('Hello, World!\n')
+
+# Append to file
+with open('log.txt', 'a') as f:
+    f.write(f'[{datetime.now()}] Event logged\n')
+
+# Check if file exists
+import os
+if os.path.exists('config.json'):
+    print("File exists")
+
+# Get file size
+size = os.path.getsize('file.txt')
+```
 
 ---
 
-## 3. Working with APIs (Requests)
-DevOps is mostly talking to APIs (AWS, Slack, GitHub, Jira).
-* **The `requests` Library:** The industry standard.
-* *Error Handling:* Always wrap calls in `try/except`.
-    ```python
-    import requests
-    try:
-        response = requests.get(url)
-        response.raise_for_status() # Raises error for 4xx/5xx codes automatically
-    except requests.exceptions.RequestException as e:
-        print(f"API Failed: {e}")
-        sys.exit(1)
-    ```
+## 3. Working with APIs (Requests Library)
+
+DevOps is mostly talking to APIs (AWS, Slack, GitHub, Jira, Kubernetes).
+
+### Basic Requests
+
+```python
+import requests
+
+# GET request
+response = requests.get('https://api.example.com/users')
+data = response.json()
+
+# POST request
+payload = {'username': 'john', 'email': 'john@example.com'}
+response = requests.post('https://api.example.com/users', json=payload)
+
+# PUT request
+response = requests.put('https://api.example.com/users/1', json=payload)
+
+# DELETE request
+response = requests.delete('https://api.example.com/users/1')
+```
+
+### Production-Grade API Calls
+
+```python
+import requests
+import sys
+
+def call_api(url, timeout=5, retries=3):
+    """Call API with error handling and retries."""
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()  # Raises HTTPError for 4xx/5xx
+            return response.json()
+        except requests.exceptions.Timeout:
+            print(f"Timeout on attempt {attempt + 1}", file=sys.stderr)
+        except requests.exceptions.HTTPError as e:
+            print(f"HTTP error: {e}", file=sys.stderr)
+            if response.status_code >= 500:  # Retry on server errors
+                continue
+            break
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}", file=sys.stderr)
+            break
+    
+    print("API call failed after retries", file=sys.stderr)
+    return None
+
+# Usage
+data = call_api('https://api.example.com/status')
+if data:
+    print(data['status'])
+else:
+    sys.exit(1)
+```
+
+### Authentication
+
+```python
+# Basic Auth
+response = requests.get(
+    'https://api.example.com/data',
+    auth=('username', 'password')
+)
+
+# Bearer Token
+headers = {'Authorization': 'Bearer YOUR_TOKEN'}
+response = requests.get('https://api.example.com/data', headers=headers)
+
+# API Key
+headers = {'X-API-Key': 'YOUR_API_KEY'}
+response = requests.get('https://api.example.com/data', headers=headers)
+```
+
+### Handling Responses
+
+```python
+response = requests.get('https://api.example.com/data')
+
+# Status code
+print(response.status_code)  # 200
+
+# Check if successful
+if response.ok:  # True if status_code < 400
+    print("Success")
+
+# Headers
+print(response.headers['content-type'])
+
+# JSON response
+data = response.json()
+
+# Text response
+text = response.text
+
+# Raw bytes
+bytes_data = response.content
+```
 
 ---
 
-## 4. Building CLIs (`argparse` vs `click`)
+## 4. Building CLIs (argparse vs click)
+
 Don't hardcode variables. Build tools your team can use.
-* **`argparse`:** Built-in, robust, but verbose. Good for simple scripts.
-* **`click`:** Third-party, creates beautiful CLIs with decorators. Preferred for building internal platform tools (IDPs).
+
+### argparse (Built-in)
+
+```python
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Deploy application to environment'
+    )
+    
+    parser.add_argument(
+        '-e', '--environment',
+        required=True,
+        choices=['dev', 'staging', 'prod'],
+        help='Target environment'
+    )
+    
+    parser.add_argument(
+        '-v', '--version',
+        required=True,
+        help='Version to deploy'
+    )
+    
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Perform dry run without making changes'
+    )
+    
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable verbose output'
+    )
+    
+    args = parser.parse_args()
+    
+    # Use arguments
+    print(f"Deploying version {args.version} to {args.environment}")
+    if args.dry_run:
+        print("DRY RUN MODE")
+
+if __name__ == '__main__':
+    main()
+```
+
+### click (Third-Party, Cleaner)
+
+```python
+import click
+
+@click.command()
+@click.option('-e', '--environment', required=True,
+              type=click.Choice(['dev', 'staging', 'prod']),
+              help='Target environment')
+@click.option('-v', '--version', required=True,
+              help='Version to deploy')
+@click.option('--dry-run', is_flag=True,
+              help='Perform dry run')
+@click.option('--verbose', is_flag=True,
+              help='Enable verbose output')
+def deploy(environment, version, dry_run, verbose):
+    """Deploy application to environment."""
+    click.echo(f"Deploying version {version} to {environment}")
+    if dry_run:
+        click.echo("DRY RUN MODE", fg='yellow')
+
+if __name__ == '__main__':
+    deploy()
+```
+
+### Advanced CLI Patterns
+
+```python
+import click
+import sys
+
+@click.group()
+@click.option('--verbose', is_flag=True, help='Enable verbose mode')
+@click.pass_context
+def cli(ctx, verbose):
+    """DevOps automation tool."""
+    ctx.ensure_object(dict)
+    ctx.obj['verbose'] = verbose
+
+@cli.command()
+@click.argument('environment')
+@click.pass_context
+def deploy(ctx, environment):
+    """Deploy to environment."""
+    if ctx.obj['verbose']:
+        click.echo(f"Verbose: Deploying to {environment}")
+    else:
+        click.echo(f"Deploying to {environment}")
+
+@cli.command()
+@click.option('--format', type=click.Choice(['json', 'yaml']),
+              default='json', help='Output format')
+def status(format):
+    """Show deployment status."""
+    click.echo(f"Status in {format} format")
+
+if __name__ == '__main__':
+    cli()
+
+# Usage:
+# python tool.py --verbose deploy prod
+# python tool.py status --format yaml
+```
 
 ---
 
-## 5. Regular Expressions (`re`)
-* Used for log parsing and validation.
-* *Interview Q:* "How do you extract an IP address from a line of text?"
-* *Answer:* `re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', line)`
+## 5. Regular Expressions (re)
+
+Used for log parsing and validation.
+
+```python
+import re
+
+# Simple search
+line = "2024-01-29 ERROR: Connection failed from 192.168.1.100"
+if re.search(r'ERROR', line):
+    print("Error found")
+
+# Extract IP address
+match = re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', line)
+if match:
+    ip = match.group()
+    print(f"IP: {ip}")  # 192.168.1.100
+
+# Extract multiple groups
+pattern = r'(\d{4}-\d{2}-\d{2}) (ERROR|WARN|INFO): (.+)'
+match = re.search(pattern, line)
+if match:
+    date = match.group(1)
+    level = match.group(2)
+    message = match.group(3)
+
+# Find all matches
+text = "Errors on 192.168.1.1, 10.0.0.5, and 172.16.0.10"
+ips = re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', text)
+print(ips)  # ['192.168.1.1', '10.0.0.5', '172.16.0.10']
+
+# Replace
+clean_text = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '[IP]', text)
+print(clean_text)  # "Errors on [IP], [IP], and [IP]"
+```
+
+### Common Patterns
+
+```python
+# Email validation
+email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+if re.match(email_pattern, email):
+    print("Valid email")
+
+# Log level extraction
+log_pattern = r'\[(ERROR|WARN|INFO|DEBUG)\]'
+level = re.search(log_pattern, log_line).group(1)
+
+# Version number
+version_pattern = r'(\d+)\.(\d+)\.(\d+)'
+match = re.match(version_pattern, "1.2.3")
+major, minor, patch = match.groups()
+```
 
 ---
 
+## 6. Exception Handling
+
+```python
+import sys
+
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    print("Error: config.json not found", file=sys.stderr)
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"Error: Invalid JSON: {e}", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"Unexpected error: {e}", file=sys.stderr)
+    sys.exit(1)
+```
+
+---
 Class 9.2.2:
-	Title: Python Cloud SDKs
-	Description: Automating AWS with Boto3.
+Title: Python Cloud SDKs
+Description: Automating AWS with Boto3 and Kubernetes with Python client.
 Content Type: text
-Duration: 450 
+Duration: 450
 Order: 2
-		Text Content :
+Text Content :
+# Cloud Automation with Python (Boto3 & Kubernetes)
 
-# Cloud Automation with Python (Boto3)
+## 1. Boto3 (AWS SDK for Python)
 
-## 1. Boto3 (AWS SDK)
-Boto3 is the official **AWS SDK for Python**.  
-It allows you to provision, configure, and operate AWS infrastructure programmatically instead of using the Console or CLI.
+Boto3 is the official **AWS SDK for Python**. It allows you to provision, configure, and operate AWS infrastructure programmatically instead of using the Console or CLI.
 
-**Common Use Cases**
-* Automate EC2 lifecycle (start/stop/terminate)
-* Manage S3 objects and lifecycle
-* Trigger infrastructure actions from CI/CD
-* Build internal tooling and self-service platforms
+**Common Use Cases:**
+- Automate EC2 lifecycle (start/stop/terminate)
+- Manage S3 objects and lifecycle
+- Trigger infrastructure actions from CI/CD
+- Build internal tooling and self-service platforms
+- Query CloudWatch logs and metrics
+- Manage IAM roles and policies
 
 ---
 
 ## 2. Client vs. Resource (Critical Distinction)
 
 ### Client (Low-Level API)
-* Direct, thin wrapper over AWS REST APIs
-* Returns **raw dictionaries**
-* Requires you to handle pagination, retries, and response parsing
 
-**Use When**
-* You need maximum control
-* A feature is missing in Resource APIs
-* Performance and predictability matter
+- Direct, thin wrapper over AWS REST APIs
+- Returns **raw dictionaries**
+- Requires you to handle pagination, retries, and response parsing
+- More control, more code
+
+**Use When:**
+- You need maximum control
+- A feature is missing in Resource APIs
+- Performance and predictability matter
+- Working with newer AWS services
 
 ```python
 import boto3
-client = boto3.client('ec2')
+
+client = boto3.client('ec2', region_name='us-east-1')
+
+# Returns dictionary
 response = client.describe_instances()
+
+for reservation in response['Reservations']:
+    for instance in reservation['Instances']:
+        print(instance['InstanceId'], instance['State']['Name'])
 ```
 
 ### Resource (High-Level Abstraction)
 
-* Object-oriented interface
-* Returns **Python objects**
-* Cleaner, more readable code
+- Object-oriented interface
+- Returns **Python objects**
+- Cleaner, more readable code
+- Handles some pagination automatically
 
-**Use When**
-
-* Writing scripts quickly
-* Managing common resources (S3, EC2, DynamoDB)
-* Readability > control
+**Use When:**
+- Writing scripts quickly
+- Managing common resources (S3, EC2, DynamoDB)
+- Readability > control
+- Prototyping
 
 ```python
-s3 = boto3.resource('s3')
-bucket = s3.Bucket('my-bucket')
-bucket.upload_file('file.txt', 'file.txt')
+import boto3
+
+ec2 = boto3.resource('ec2', region_name='us-east-1')
+
+# Returns Python objects
+for instance in ec2.instances.all():
+    print(instance.id, instance.state['Name'])
 ```
 
 **Production Reality:**
-Most serious automation uses **Clients** under the hood.
+Most serious automation uses **Clients** for predictability and control.
 
 ---
 
@@ -27453,29 +29053,63 @@ AWS APIs almost never return *all* results in one call.
 ### The Problem
 
 APIs like:
+- `describe_instances`
+- `list_objects_v2`
+- `describe_log_streams`
+- `list_buckets`
 
-* `describe_instances`
-* `list_objects_v2`
-* `describe_log_streams`
-
-often return **only the first 1000 results**.
+often return **only the first 100-1000 results**.
 
 Your script:
+- Appears to work
+- Produces incomplete data
+- Fails silently
 
-* Appears to work
-* Produces incomplete data
-* Fails silently
-
-### The Correct Pattern
-
-Always use **Paginators**.
+### The WRONG Way
 
 ```python
-paginator = client.get_paginator('list_objects_v2')
+# WRONG - Only gets first page
+client = boto3.client('ec2')
+response = client.describe_instances()
+
+for reservation in response['Reservations']:
+    # Missing instances if you have > 1000!
+    pass
+```
+
+### The CORRECT Way - Always Use Paginators
+
+```python
+import boto3
+
+client = boto3.client('ec2', region_name='us-east-1')
+paginator = client.get_paginator('describe_instances')
+
+# Automatically handles pagination
+for page in paginator.paginate():
+    for reservation in page['Reservations']:
+        for instance in reservation['Instances']:
+            print(instance['InstanceId'])
+```
+
+**S3 Example:**
+```python
+s3_client = boto3.client('s3')
+paginator = s3_client.get_paginator('list_objects_v2')
 
 for page in paginator.paginate(Bucket='my-bucket'):
     for obj in page.get('Contents', []):
-        print(obj['Key'])
+        print(obj['Key'], obj['Size'])
+```
+
+**CloudWatch Logs Example:**
+```python
+logs_client = boto3.client('logs')
+paginator = logs_client.get_paginator('describe_log_streams')
+
+for page in paginator.paginate(logGroupName='/aws/lambda/my-function'):
+    for stream in page['logStreams']:
+        print(stream['logStreamName'])
 ```
 
 **Interview Rule:**
@@ -27487,101 +29121,952 @@ If pagination is ignored, the answer is wrong.
 
 Boto3 follows a strict credential resolution order:
 
-1. Environment variables
-2. AWS credentials file (`~/.aws/credentials`)
-3. IAM Role (EC2 / EKS / ECS)
-4. Explicit credentials in code (avoid)
+1. **Explicit credentials in code** (avoid!)
+2. **Environment variables** (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+3. **AWS credentials file** (`~/.aws/credentials`)
+4. **AWS config file** (`~/.aws/config`)
+5. **IAM Role** (EC2 / EKS / ECS / Lambda)
+6. **Container credentials** (ECS tasks)
+7. **Instance metadata** (EC2)
 
-**Best Practice**
-
-* Never hardcode credentials
-* Use IAM Roles in production
-* Use short-lived credentials (STS)
-
----
-
-## 5. Kubernetes Python Client
-
-Stop shelling out to `kubectl` and parsing text.
-
-### Why Use the Python Client
-
-* Structured API access
-* Watches events in real time
-* No brittle `grep | awk | sed` pipelines
-
-**Use Cases**
-
-* Detect `CrashLoopBackOff`
-* Auto-remediate failing pods
-* Trigger Slack / PagerDuty alerts
-* Build custom controllers or operators
+**Best Practice:**
 
 ```python
-from kubernetes import client, config
-config.load_incluster_config()
-v1 = client.CoreV1Api()
+# WRONG - Never hardcode credentials!
+client = boto3.client(
+    's3',
+    aws_access_key_id='AKIAIOSFODNN7EXAMPLE',
+    aws_secret_access_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+)
+
+# RIGHT - Let Boto3 find credentials automatically
+client = boto3.client('s3')
+
+# BEST - Use IAM Roles in production
+# No code changes needed, Boto3 uses instance role
+client = boto3.client('s3')
+```
+
+**Using Profiles:**
+```python
+# ~/.aws/credentials
+# [production]
+# aws_access_key_id = ...
+# aws_secret_access_key = ...
+
+# Use specific profile
+session = boto3.Session(profile_name='production')
+client = session.client('s3')
+```
+
+**Cross-Account Access with STS:**
+```python
+import boto3
+
+sts = boto3.client('sts')
+
+# Assume role in another account
+response = sts.assume_role(
+    RoleArn='arn:aws:iam::123456789012:role/MyRole',
+    RoleSessionName='my-session'
+)
+
+credentials = response['Credentials']
+
+# Use temporary credentials
+s3 = boto3.client(
+    's3',
+    aws_access_key_id=credentials['AccessKeyId'],
+    aws_secret_access_key=credentials['SecretAccessKey'],
+    aws_session_token=credentials['SessionToken']
+)
 ```
 
 ---
 
-## Boto3 & K8s Automation Summary
+## 5. Common Boto3 Operations
 
-| Concept           | Purpose                  | Production Importance |
-| ----------------- | ------------------------ | --------------------- |
-| Boto3 Client      | Low-level AWS API access | Critical              |
-| Boto3 Resource    | High-level abstraction   | Medium                |
-| Pagination        | Prevent silent data loss | Mandatory             |
-| IAM Roles         | Secure authentication    | Mandatory             |
-| STS               | Short-lived credentials  | High                  |
-| K8s Python Client | Event-driven automation  | High                  |
+### EC2 Operations
+
+```python
+import boto3
+
+ec2 = boto3.client('ec2', region_name='us-east-1')
+
+# List all instances
+paginator = ec2.get_paginator('describe_instances')
+for page in paginator.paginate():
+    for reservation in page['Reservations']:
+        for instance in reservation['Instances']:
+            print(f"{instance['InstanceId']}: {instance['State']['Name']}")
+
+# Start instances
+ec2.start_instances(InstanceIds=['i-1234567890abcdef0'])
+
+# Stop instances
+ec2.stop_instances(InstanceIds=['i-1234567890abcdef0'])
+
+# Terminate instances
+ec2.terminate_instances(InstanceIds=['i-1234567890abcdef0'])
+
+# Filter instances by tag
+response = ec2.describe_instances(
+    Filters=[
+        {'Name': 'tag:Environment', 'Values': ['production']},
+        {'Name': 'instance-state-name', 'Values': ['running']}
+    ]
+)
+```
+
+### S3 Operations
+
+```python
+import boto3
+
+s3 = boto3.client('s3')
+
+# List buckets
+response = s3.list_buckets()
+for bucket in response['Buckets']:
+    print(bucket['Name'])
+
+# Upload file
+s3.upload_file('local.txt', 'my-bucket', 'remote.txt')
+
+# Download file
+s3.download_file('my-bucket', 'remote.txt', 'local.txt')
+
+# List objects with pagination
+paginator = s3.get_paginator('list_objects_v2')
+for page in paginator.paginate(Bucket='my-bucket', Prefix='logs/'):
+    for obj in page.get('Contents', []):
+        print(obj['Key'])
+
+# Delete object
+s3.delete_object(Bucket='my-bucket', Key='file.txt')
+
+# Generate presigned URL (temporary access)
+url = s3.generate_presigned_url(
+    'get_object',
+    Params={'Bucket': 'my-bucket', 'Key': 'file.txt'},
+    ExpiresIn=3600  # 1 hour
+)
+```
+
+### CloudWatch Logs
+
+```python
+import boto3
+
+logs = boto3.client('logs')
+
+# Search log events
+response = logs.filter_log_events(
+    logGroupName='/aws/lambda/my-function',
+    startTime=int(time.time() - 3600) * 1000,  # Last hour
+    filterPattern='ERROR'
+)
+
+for event in response['events']:
+    print(event['message'])
+```
+
+---
+
+## 6. Kubernetes Python Client
+
+Stop shelling out to `kubectl` and parsing text output!
+
+### Why Use the Python Client?
+
+- Structured API access
+- Watches events in real time
+- No brittle `grep | awk | sed` pipelines
+- Type-safe operations
+- Better error handling
+
+**Use Cases:**
+- Detect `CrashLoopBackOff` and restart pods
+- Auto-remediate failing pods
+- Trigger Slack / PagerDuty alerts
+- Build custom controllers or operators
+- Automate deployments
+- Monitor cluster health
+
+---
+
+### Setup
+
+```bash
+pip install kubernetes
+```
+
+### Basic Operations
+
+```python
+from kubernetes import client, config
+
+# Load kubeconfig from default location (~/.kube/config)
+config.load_kube_config()
+
+# Or load from specific file
+config.load_kube_config(config_file="/path/to/kubeconfig")
+
+# Or load in-cluster config (when running inside cluster)
+config.load_incluster_config()
+
+# Create API client
+v1 = client.CoreV1Api()
+```
+
+### List Pods
+
+```python
+from kubernetes import client, config
+
+config.load_kube_config()
+v1 = client.CoreV1Api()
+
+# List all pods in all namespaces
+pods = v1.list_pod_for_all_namespaces()
+for pod in pods.items:
+    print(f"{pod.metadata.namespace}/{pod.metadata.name}: {pod.status.phase}")
+
+# List pods in specific namespace
+pods = v1.list_namespaced_pod(namespace='default')
+for pod in pods.items:
+    print(f"{pod.metadata.name}: {pod.status.phase}")
+
+# Filter by label
+pods = v1.list_namespaced_pod(
+    namespace='default',
+    label_selector='app=nginx'
+)
+```
+
+### Get Pod Details
+
+```python
+pod = v1.read_namespaced_pod(name='my-pod', namespace='default')
+
+print(f"Status: {pod.status.phase}")
+print(f"Node: {pod.spec.node_name}")
+print(f"IP: {pod.status.pod_ip}")
+
+for container in pod.spec.containers:
+    print(f"Container: {container.name}, Image: {container.image}")
+```
+
+### Create/Delete Resources
+
+```python
+from kubernetes import client
+
+# Create pod
+pod_manifest = {
+    'apiVersion': 'v1',
+    'kind': 'Pod',
+    'metadata': {'name': 'my-pod'},
+    'spec': {
+        'containers': [{
+            'name': 'nginx',
+            'image': 'nginx:latest'
+        }]
+    }
+}
+
+v1.create_namespaced_pod(namespace='default', body=pod_manifest)
+
+# Delete pod
+v1.delete_namespaced_pod(name='my-pod', namespace='default')
+```
+
+### Watch for Changes
+
+```python
+from kubernetes import client, config, watch
+
+config.load_kube_config()
+v1 = client.CoreV1Api()
+
+# Watch pod events
+w = watch.Watch()
+for event in w.stream(v1.list_namespaced_pod, namespace='default'):
+    pod = event['object']
+    event_type = event['type']
+    
+    print(f"{event_type}: {pod.metadata.name} - {pod.status.phase}")
+    
+    # Stop watching after seeing a deleted event
+    if event_type == 'DELETED':
+        w.stop()
+```
+
+### Production Example: Auto-Restart CrashLooping Pods
+
+```python
+from kubernetes import client, config, watch
+import time
+
+config.load_kube_config()
+v1 = client.CoreV1Api()
+
+def restart_crashlooping_pods():
+    """Monitor and restart pods in CrashLoopBackOff."""
+    w = watch.Watch()
+    
+    for event in w.stream(v1.list_pod_for_all_namespaces):
+        pod = event['object']
+        namespace = pod.metadata.namespace
+        name = pod.metadata.name
+        
+        # Check for CrashLoopBackOff
+        if pod.status.container_statuses:
+            for container in pod.status.container_statuses:
+                if container.state.waiting:
+                    if container.state.waiting.reason == 'CrashLoopBackOff':
+                        print(f"Restarting {namespace}/{name}")
+                        
+                        # Delete pod (will be recreated by deployment)
+                        v1.delete_namespaced_pod(name=name, namespace=namespace)
+                        
+                        # Send alert
+                        send_slack_alert(f"Restarted crashlooping pod: {namespace}/{name}")
+
+restart_crashlooping_pods()
+```
+
+---
+
+## 7. Error Handling Best Practices
+
+### Boto3 Error Handling
+
+```python
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
+
+try:
+    s3 = boto3.client('s3')
+    s3.head_bucket(Bucket='my-bucket')
+except NoCredentialsError:
+    print("ERROR: AWS credentials not found")
+    sys.exit(1)
+except ClientError as e:
+    error_code = e.response['Error']['Code']
+    
+    if error_code == '404':
+        print("ERROR: Bucket does not exist")
+    elif error_code == '403':
+        print("ERROR: Access denied")
+    else:
+        print(f"ERROR: {e}")
+    
+    sys.exit(1)
+```
+
+### Kubernetes Error Handling
+
+```python
+from kubernetes import client
+from kubernetes.client.rest import ApiException
+
+try:
+    v1 = client.CoreV1Api()
+    pod = v1.read_namespaced_pod(name='my-pod', namespace='default')
+except ApiException as e:
+    if e.status == 404:
+        print("Pod not found")
+    elif e.status == 403:
+        print("Access denied")
+    else:
+        print(f"API error: {e}")
+    sys.exit(1)
+```
+
+---
+
+## 8. Summary Table
+
+| Concept | Purpose | Production Importance |
+|---------|---------|----------------------|
+| Boto3 Client | Low-level AWS API access | Critical |
+| Boto3 Resource | High-level abstraction | Medium |
+| Pagination | Prevent silent data loss | Mandatory |
+| IAM Roles | Secure authentication | Mandatory |
+| STS | Short-lived credentials | High |
+| K8s Python Client | Event-driven automation | High |
+| Error Handling | Graceful failures | Critical |
 
 ---
 
 ### Interview Reality Check
 
 If your automation script:
+- Hardcodes credentials
+- Ignores pagination
+- Parses `kubectl` output with grep/awk
 
-* Hardcodes credentials
-* Ignores pagination
-* Parses `kubectl` output
-
-…it is not production-grade.
-
-
+…it is **not production-grade**.
 
 ---
 
 Class 9.2.3:
-	Title: Building Operational Tools
-	Description: Real-world scripting scenarios.
+Title: Building Operational Tools
+Description: Real-world scripting scenarios and automation patterns.
 Content Type: text
-Duration: 400 
+Duration: 400
 Order: 3
-		Text Content :
- # Real-World Automation Scenarios
+Text Content:
+# Real-World Automation Scenarios
 
 ## 1. The "Janitor" Script (Cost Optimization)
-* *Problem:* Dev environment costs are skyrocketing because engineers forget to delete EC2 instances / EBS volumes.
-* *Solution:* A Python Lambda function that runs every night at 8 PM. It scans all EC2 instances, checks for a tag `KeepAlive=True`. If the tag is missing, it terminates the instance.
+
+**Problem:** Dev environment costs are skyrocketing because engineers forget to delete EC2 instances and EBS volumes.
+
+**Solution:** A Python Lambda function that runs every night at 8 PM. It scans all EC2 instances, checks for a tag `KeepAlive=True`. If the tag is missing, it terminates the instance.
+
+```python
+import boto3
+from datetime import datetime
+import os
+
+def lambda_handler(event, context):
+    """Terminate untagged dev instances to save costs."""
+    
+    ec2 = boto3.client('ec2', region_name=os.environ['AWS_REGION'])
+    
+    # Get all running instances
+    paginator = ec2.get_paginator('describe_instances')
+    
+    terminated_count = 0
+    
+    for page in paginator.paginate(
+        Filters=[
+            {'Name': 'instance-state-name', 'Values': ['running']},
+            {'Name': 'tag:Environment', 'Values': ['dev', 'development']}
+        ]
+    ):
+        for reservation in page['Reservations']:
+            for instance in reservation['Instances']:
+                instance_id = instance['InstanceId']
+                
+                # Check for KeepAlive tag
+                keep_alive = False
+                for tag in instance.get('Tags', []):
+                    if tag['Key'] == 'KeepAlive' and tag['Value'].lower() == 'true':
+                        keep_alive = True
+                        break
+                
+                if not keep_alive:
+                    print(f"Terminating {instance_id} (no KeepAlive tag)")
+                    ec2.terminate_instances(InstanceIds=[instance_id])
+                    terminated_count += 1
+                else:
+                    print(f"Keeping {instance_id} (KeepAlive=true)")
+    
+    return {
+        'statusCode': 200,
+        'body': f'Terminated {terminated_count} instances'
+    }
+```
+
+**Deployment:**
+```bash
+# Create deployment package
+pip install boto3 -t package/
+cp lambda_function.py package/
+cd package && zip -r ../function.zip .
+
+# Deploy with Terraform/CloudFormation
+# Or use AWS SAM/Serverless Framework
+```
 
 ---
 
 ## 2. The Log Parser & Alerter
-* *Problem:* Nginx logs are unstructured. We need to alert Slack if 500 errors spike above 5%.
-* *Solution:* A script that `tails` the log file, uses Regex to extract the status code, calculates a rolling average in memory, and sends a POST request to a Slack Webhook if the threshold is breached.
+
+**Problem:** Nginx logs are unstructured. We need to alert Slack if 500 errors spike above 5%.
+
+**Solution:** A script that tails the log file, uses regex to extract the status code, calculates a rolling average in memory, and sends a POST request to a Slack webhook if the threshold is breached.
+
+```python
+#!/usr/bin/env python3
+import re
+import requests
+from collections import deque
+from typing import Deque
+import sys
+import time
+
+# Configuration
+LOG_FILE = '/var/log/nginx/access.log'
+SLACK_WEBHOOK = 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+WINDOW_SIZE = 100  # Number of requests to track
+THRESHOLD = 0.05  # 5% error rate
+
+# Nginx log pattern
+# Example: 192.168.1.1 - - [29/Jan/2024:10:00:00 +0000] "GET /api HTTP/1.1" 200 1234
+LOG_PATTERN = re.compile(
+    r'(?P<ip>[\d.]+) - - \[(?P<timestamp>[^\]]+)\] '
+    r'"(?P<method>\w+) (?P<path>[^\s]+) HTTP/[\d.]+" '
+    r'(?P<status>\d+) (?P<size>\d+)'
+)
+
+class ErrorRateMonitor:
+    def __init__(self, window_size: int, threshold: float):
+        self.window: Deque[bool] = deque(maxlen=window_size)
+        self.threshold = threshold
+        self.alerted = False
+    
+    def add_request(self, is_error: bool):
+        """Add request to sliding window."""
+        self.window.append(is_error)
+    
+    def get_error_rate(self) -> float:
+        """Calculate current error rate."""
+        if not self.window:
+            return 0.0
+        return sum(self.window) / len(self.window)
+    
+    def check_threshold(self) -> bool:
+        """Check if error rate exceeds threshold."""
+        if len(self.window) < self.window.maxlen:
+            return False  # Not enough data yet
+        
+        error_rate = self.get_error_rate()
+        
+        if error_rate > self.threshold and not self.alerted:
+            self.send_alert(error_rate)
+            self.alerted = True
+            return True
+        elif error_rate <= self.threshold:
+            self.alerted = False
+        
+        return False
+    
+    def send_alert(self, error_rate: float):
+        """Send Slack alert."""
+        message = {
+            'text': f':rotating_light: *ALERT*: Error rate at {error_rate:.1%}!',
+            'attachments': [{
+                'color': 'danger',
+                'fields': [
+                    {'title': 'Error Rate', 'value': f'{error_rate:.1%}', 'short': True},
+                    {'title': 'Threshold', 'value': f'{self.threshold:.1%}', 'short': True},
+                    {'title': 'Window Size', 'value': str(self.window.maxlen), 'short': True}
+                ]
+            }]
+        }
+        
+        try:
+            response = requests.post(SLACK_WEBHOOK, json=message, timeout=5)
+            response.raise_for_status()
+            print(f"Alert sent to Slack (error rate: {error_rate:.1%})")
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to send Slack alert: {e}", file=sys.stderr)
+
+def tail_log(filename: str):
+    """Tail log file like 'tail -f'."""
+    with open(filename, 'r') as f:
+        # Go to end of file
+        f.seek(0, 2)
+        
+        while True:
+            line = f.readline()
+            if line:
+                yield line
+            else:
+                time.sleep(0.1)
+
+def main():
+    monitor = ErrorRateMonitor(WINDOW_SIZE, THRESHOLD)
+    
+    print(f"Monitoring {LOG_FILE} for error rate > {THRESHOLD:.1%}")
+    
+    try:
+        for line in tail_log(LOG_FILE):
+            match = LOG_PATTERN.match(line)
+            if match:
+                status = int(match.group('status'))
+                is_error = status >= 500
+                
+                monitor.add_request(is_error)
+                
+                if is_error:
+                    print(f"5xx error: {status} {match.group('path')}")
+                
+                monitor.check_threshold()
+    except KeyboardInterrupt:
+        print("\nStopping monitor...")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+```
+
+**Running as Service:**
+```ini
+# /etc/systemd/system/nginx-monitor.service
+[Unit]
+Description=Nginx Error Rate Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=monitor
+ExecStart=/usr/bin/python3 /opt/monitor/nginx_monitor.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ---
 
 ## 3. The Deployment Verifier (Smoke Test)
-* *Problem:* CI says "Success," but the app is returning 404s or 502s.
-* *Solution:* A "Smoke Test" script included in the CD pipeline. After deployment, it hits the health endpoint `/healthz`. If it doesn't get a 200 OK within 60 seconds (retry logic), it triggers an automatic rollback via the Cloud Provider API.
+
+**Problem:** CI says "Success," but the app is returning 404s or 502s in production.
+
+**Solution:** A "Smoke Test" script included in the CD pipeline. After deployment, it hits the health endpoint `/healthz`. If it doesn't get a 200 OK within 60 seconds (with retry logic), it triggers an automatic rollback via the Cloud Provider API.
+
+```python
+#!/usr/bin/env python3
+import requests
+import sys
+import time
+import boto3
+from typing import Optional
+
+# Configuration
+APP_URL = 'https://myapp.example.com'
+HEALTH_ENDPOINT = '/healthz'
+TIMEOUT = 60  # seconds
+RETRY_INTERVAL = 2  # seconds
+ECS_CLUSTER = 'production'
+ECS_SERVICE = 'myapp-service'
+
+def check_health(url: str, timeout: int) -> bool:
+    """Check health endpoint with retries."""
+    deadline = time.time() + timeout
+    
+    while time.time() < deadline:
+        try:
+            response = requests.get(
+                f"{url}{HEALTH_ENDPOINT}",
+                timeout=5,
+                headers={'User-Agent': 'DeploymentVerifier/1.0'}
+            )
+            
+            if response.status_code == 200:
+                print(f"✓ Health check passed: {response.status_code}")
+                return True
+            else:
+                print(f"✗ Health check failed: {response.status_code}")
+        
+        except requests.exceptions.RequestException as e:
+            print(f"✗ Health check error: {e}")
+        
+        remaining = int(deadline - time.time())
+        print(f"  Retrying in {RETRY_INTERVAL}s ({remaining}s remaining)...")
+        time.sleep(RETRY_INTERVAL)
+    
+    return False
+
+def rollback_deployment():
+    """Rollback ECS service to previous task definition."""
+    print("Initiating rollback...")
+    
+    try:
+        ecs = boto3.client('ecs')
+        
+        # Get current service
+        response = ecs.describe_services(
+            cluster=ECS_CLUSTER,
+            services=[ECS_SERVICE]
+        )
+        
+        service = response['services'][0]
+        current_task_def = service['taskDefinition']
+        
+        print(f"Current task definition: {current_task_def}")
+        
+        # Get previous task definition
+        # In real implementation, you'd track this in SSM Parameter Store or similar
+        # For now, we'll just demonstrate the rollback process
+        
+        # Update service to previous version
+        # ecs.update_service(
+        #     cluster=ECS_CLUSTER,
+        #     service=ECS_SERVICE,
+        #     taskDefinition=previous_task_def,
+        #     forceNewDeployment=True
+        # )
+        
+        print("Rollback initiated")
+        send_alert("Deployment failed, rollback initiated")
+        
+    except Exception as e:
+        print(f"Rollback failed: {e}", file=sys.stderr)
+        send_alert(f"Deployment AND rollback failed: {e}")
+        sys.exit(1)
+
+def send_alert(message: str):
+    """Send alert to Slack/PagerDuty."""
+    webhook = 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+    
+    try:
+        requests.post(
+            webhook,
+            json={
+                'text': f':rotating_light: *Deployment Alert*\n{message}',
+                'username': 'Deployment Bot'
+            },
+            timeout=5
+        )
+    except Exception as e:
+        print(f"Failed to send alert: {e}", file=sys.stderr)
+
+def main():
+    print(f"Verifying deployment: {APP_URL}")
+    print(f"Timeout: {TIMEOUT}s")
+    
+    if check_health(APP_URL, TIMEOUT):
+        print("\n✓ Deployment verification PASSED")
+        send_alert(f"Deployment to {ECS_SERVICE} succeeded")
+        sys.exit(0)
+    else:
+        print("\n✗ Deployment verification FAILED")
+        rollback_deployment()
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+```
+
+**CI/CD Integration (GitLab CI):**
+```yaml
+deploy:
+  stage: deploy
+  script:
+    - aws ecs update-service --cluster production --service myapp --force-new-deployment
+    - python3 verify_deployment.py
+  only:
+    - main
+```
 
 ---
 
-## 4. Bulk Operations
-* *Scenario:* "Rotate the SSH key on 500 servers."
-* *Tool:* Use Python with the `paramiko` library (or Ansible) to loop through the inventory and execute the key update command safely.
+## 4. Bulk Operations (SSH Key Rotation)
+
+**Scenario:** "Rotate the SSH key on 500 servers."
+
+**Solution:** Use Python with the `paramiko` library (or Ansible) to loop through the inventory and execute the key update command safely.
+
+```python
+#!/usr/bin/env python3
+import paramiko
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Tuple
+import logging
+
+# Configuration
+SERVERS_FILE = 'servers.txt'
+NEW_PUBLIC_KEY = '/path/to/new_key.pub'
+SSH_USER = 'deploy'
+SSH_KEY = '/path/to/current_key.pem'
+MAX_WORKERS = 10
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def rotate_ssh_key(server: str) -> Tuple[str, bool, str]:
+    """Rotate SSH key on a single server."""
+    try:
+        # Read new public key
+        with open(NEW_PUBLIC_KEY, 'r') as f:
+            new_key = f.read().strip()
+        
+        # Connect to server
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        ssh.connect(
+            hostname=server,
+            username=SSH_USER,
+            key_filename=SSH_KEY,
+            timeout=10
+        )
+        
+        # Backup current authorized_keys
+        stdin, stdout, stderr = ssh.exec_command(
+            'cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.backup'
+        )
+        stdout.channel.recv_exit_status()
+        
+        # Add new key
+        stdin, stdout, stderr = ssh.exec_command(
+            f'echo "{new_key}" >> ~/.ssh/authorized_keys'
+        )
+        exit_status = stdout.channel.recv_exit_status()
+        
+        if exit_status != 0:
+            error = stderr.read().decode()
+            ssh.close()
+            return (server, False, f"Failed to add key: {error}")
+        
+        # Verify new key works (optional: test connection with new key)
+        
+        ssh.close()
+        return (server, True, "Key rotated successfully")
+    
+    except Exception as e:
+        return (server, False, str(e))
+
+def load_servers(filename: str) -> List[str]:
+    """Load server list from file."""
+    with open(filename, 'r') as f:
+        return [line.strip() for line in f if line.strip()]
+
+def main():
+    # Load servers
+    try:
+        servers = load_servers(SERVERS_FILE)
+    except FileNotFoundError:
+        logging.error(f"Servers file not found: {SERVERS_FILE}")
+        sys.exit(1)
+    
+    logging.info(f"Rotating SSH keys on {len(servers)} servers")
+    logging.info(f"Max concurrent connections: {MAX_WORKERS}")
+    
+    # Process servers concurrently
+    success_count = 0
+    failed_servers = []
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(rotate_ssh_key, server): server 
+                  for server in servers}
+        
+        for future in as_completed(futures):
+            server, success, message = future.result()
+            
+            if success:
+                logging.info(f"✓ {server}: {message}")
+                success_count += 1
+            else:
+                logging.error(f"✗ {server}: {message}")
+                failed_servers.append((server, message))
+    
+    # Summary
+    print(f"\n{'='*60}")
+    print(f"Rotation Summary:")
+    print(f"  Total servers: {len(servers)}")
+    print(f"  Successful: {success_count}")
+    print(f"  Failed: {len(failed_servers)}")
+    print(f"{'='*60}")
+    
+    if failed_servers:
+        print("\nFailed servers:")
+        for server, error in failed_servers:
+            print(f"  {server}: {error}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+```
+
+---
+
+## 5. Auto-Scaling Based on Custom Metrics
+
+**Scenario:** Auto-scale based on queue depth (not just CPU).
+
+```python
+#!/usr/bin/env python3
+import boto3
+import time
+
+# Configuration
+SQS_QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123456789012/my-queue'
+ECS_CLUSTER = 'production'
+ECS_SERVICE = 'worker-service'
+MIN_TASKS = 2
+MAX_TASKS = 20
+TARGET_MESSAGES_PER_TASK = 10
+
+def get_queue_depth() -> int:
+    """Get approximate number of messages in queue."""
+    sqs = boto3.client('sqs')
+    
+    response = sqs.get_queue_attributes(
+        QueueUrl=SQS_QUEUE_URL,
+        AttributeNames=['ApproximateNumberOfMessages']
+    )
+    
+    return int(response['Attributes']['ApproximateNumberOfMessages'])
+
+def get_current_task_count() -> int:
+    """Get current number of running tasks."""
+    ecs = boto3.client('ecs')
+    
+    response = ecs.describe_services(
+        cluster=ECS_CLUSTER,
+        services=[ECS_SERVICE]
+    )
+    
+    return response['services'][0]['desiredCount']
+
+def set_task_count(count: int):
+    """Update desired task count."""
+    ecs = boto3.client('ecs')
+    
+    ecs.update_service(
+        cluster=ECS_CLUSTER,
+        service=ECS_SERVICE,
+        desiredCount=count
+    )
+
+def calculate_desired_tasks(queue_depth: int) -> int:
+    """Calculate desired number of tasks based on queue depth."""
+    desired = max(MIN_TASKS, (queue_depth // TARGET_MESSAGES_PER_TASK) + 1)
+    return min(desired, MAX_TASKS)
+
+def main():
+    print(f"Auto-scaling {ECS_SERVICE} based on SQS queue depth")
+    print(f"Target: {TARGET_MESSAGES_PER_TASK} messages per task")
+    print(f"Range: {MIN_TASKS}-{MAX_TASKS} tasks\n")
+    
+    while True:
+        try:
+            queue_depth = get_queue_depth()
+            current_tasks = get_current_task_count()
+            desired_tasks = calculate_desired_tasks(queue_depth)
+            
+            print(f"Queue: {queue_depth} msgs | "
+                  f"Current: {current_tasks} tasks | "
+                  f"Desired: {desired_tasks} tasks")
+            
+            if desired_tasks != current_tasks:
+                print(f"  → Scaling to {desired_tasks} tasks")
+                set_task_count(desired_tasks)
+            
+            time.sleep(60)  # Check every minute
+        
+        except KeyboardInterrupt:
+            print("\nStopping autoscaler...")
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(60)
+
+if __name__ == '__main__':
+    main()
+```
 
 ---
 Topic 9.3:
@@ -27589,12 +30074,12 @@ Title: Scripting Challenge
 Order: 3
 
 Class 9.3.1:
-	Title: Automation Scripting - Challenge
-	Description: Practical automation problems to test your coding skills.
+Title: Automation Scripting Challenge
+Description: Practical automation problems to test your coding skills.
 Content Type: text
-Duration: 600 
+Duration: 600
 Order: 1
-		Text Content :
+Text Content:
 
 # Scripting & Automation – Bash and Python Challenge
 **Contest Format | 5 Questions**
@@ -27612,30 +30097,76 @@ You need a Bash script that checks disk usage on multiple servers and prints an 
 1. Use a loop to iterate over mount points.
 2. Use conditionals to compare usage.
 3. Encapsulate logic inside a function.
+4. Use proper error handling.
 
 ---
 
 ### Answer
 
 ```bash
-check_disk() {
-  local threshold=80
-  for mount in $(df -h | awk 'NR>1 {print $6}'); do
-    usage=$(df -h "$mount" | awk 'NR==2 {gsub("%",""); print $5}')
-    if [ "$usage" -gt "$threshold" ]; then
-      echo "ALERT: $mount at ${usage}%"
-    fi
-  done
+#!/bin/bash
+set -euo pipefail
+
+# Configuration
+readonly THRESHOLD=80
+
+# Logging functions
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
 
-check_disk
-````
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2
+}
 
-**Key Points**
+check_disk() {
+    local threshold="$1"
+    local alert_count=0
+    
+    # Get all mount points (exclude pseudo filesystems)
+    while IFS= read -r line; do
+        # Skip header
+        [[ $line =~ ^Filesystem ]] && continue
+        
+        # Parse df output
+        read -r filesystem size used avail percent mountpoint <<< "$line"
+        
+        # Remove % sign from percent
+        usage="${percent%\%}"
+        
+        # Check threshold
+        if [[ $usage -gt $threshold ]]; then
+            error "ALERT: $mountpoint at ${usage}% (threshold: ${threshold}%)"
+            ((alert_count++))
+        else
+            log "OK: $mountpoint at ${usage}%"
+        fi
+    done < <(df -h | grep -vE '^tmpfs|^devtmpfs|^udev')
+    
+    return "$alert_count"
+}
 
-* Functions improve reusability
-* Conditionals enforce thresholds
-* Loops enable multi-resource checks
+main() {
+    log "Starting disk usage check (threshold: ${THRESHOLD}%)"
+    
+    if check_disk "$THRESHOLD"; then
+        log "All filesystems below threshold"
+        exit 0
+    else
+        error "One or more filesystems exceeded threshold"
+        exit 1
+    fi
+}
+
+main "$@"
+```
+
+**Key Points:**
+- Functions improve reusability
+- Conditionals enforce thresholds
+- Loops enable multi-resource checks
+- Process substitution `< <(command)` avoids subshell issues
+- Proper exit codes for monitoring integration
 
 ---
 
@@ -27646,29 +30177,85 @@ check_disk
 A deployment script continues execution even after a critical command fails, causing partial deployments.
 
 **Tasks:**
-
 1. Explain each flag in `set -euo pipefail`.
 2. Demonstrate why it is necessary.
+3. Show when `set -e` does NOT exit.
 
 ---
 
 ### Answer
 
-`set -euo pipefail`
+**Explanation of `set -euo pipefail`:**
 
-**Explanation**
+```bash
+#!/bin/bash
+set -euo pipefail
 
-* `-e`: Exit immediately on command failure
-* `-u`: Exit on use of undefined variables
-* `pipefail`: Fail pipelines if any command fails
+# -e (errexit):
+#   Exit immediately on command failure
+#   Prevents continuing after errors
 
-**Why It Matters**
+# -u (nounset):
+#   Exit on use of undefined variables
+#   Prevents rm -rf $UNDEFINED_VAR/* disasters
 
-`false | true   # Without pipefail → success`
+# -o pipefail:
+#   Fail pipelines if ANY command fails
+#   Without this: (false | true) succeeds!
+```
 
-With `pipefail`, the script exits immediately, preventing unsafe execution.
+**Why It Matters:**
 
-**Production Rule**
+```bash
+# WITHOUT pipefail - DANGEROUS
+#!/bin/bash
+set -e
+
+# This succeeds even though grep fails!
+cat /nonexistent/file | wc -l
+echo "Script continues!"  # Runs!
+
+# WITH pipefail - SAFE
+#!/bin/bash
+set -euo pipefail
+
+# This fails immediately
+cat /nonexistent/file | wc -l
+echo "Never reached"
+```
+
+**When set -e Does NOT Exit:**
+
+```bash
+#!/bin/bash
+set -e
+
+# 1. Conditional context - does NOT exit
+if false; then
+    echo "not printed"
+fi
+echo "Script continues"
+
+# 2. OR operator - does NOT exit
+false || echo "handled"
+echo "Script continues"
+
+# 3. AND operator - does NOT exit
+false && echo "not printed"
+echo "Script continues"
+
+# 4. Function with || - does NOT exit
+my_function || echo "handled"
+echo "Script continues"
+
+# To force exit in conditionals:
+if ! some_command; then
+    echo "Command failed" >&2
+    exit 1  # Explicit exit required
+fi
+```
+
+**Production Rule:**
 Always enable strict mode at the top of automation scripts.
 
 ---
@@ -27677,36 +30264,111 @@ Always enable strict mode at the top of automation scripts.
 
 ### Problem
 
-You need to call a REST API, handle failures, and parse JSON responses safely.
+You need to call a REST API, handle failures, parse JSON responses safely, and implement retry logic.
 
 **Tasks:**
-
-1. Perform a GET request
-2. Handle HTTP errors
-3. Parse the JSON response
+1. Perform a GET request with timeout
+2. Handle HTTP errors appropriately
+3. Parse the JSON response safely
+4. Implement retry logic with exponential backoff
 
 ---
 
 ### Answer
 
 ```python
+#!/usr/bin/env python3
 import requests
+import sys
+import time
+from typing import Optional, Dict, Any
 
-url = "https://api.example.com/users"
+def call_api_with_retry(
+    url: str,
+    max_retries: int = 3,
+    timeout: int = 5
+) -> Optional[Dict[Any, Any]]:
+    """
+    Call API with retry logic and exponential backoff.
+    
+    Args:
+        url: API endpoint URL
+        max_retries: Maximum number of retry attempts
+        timeout: Request timeout in seconds
+    
+    Returns:
+        Parsed JSON response or None on failure
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(url, timeout=timeout)
+            
+            # Raise exception for 4xx/5xx status codes
+            response.raise_for_status()
+            
+            # Parse JSON safely
+            try:
+                data = response.json()
+                return data
+            except ValueError as e:
+                print(f"Invalid JSON response: {e}", file=sys.stderr)
+                return None
+        
+        except requests.exceptions.Timeout:
+            print(f"Attempt {attempt}/{max_retries}: Timeout", file=sys.stderr)
+        
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code
+            
+            # Don't retry client errors (4xx)
+            if 400 <= status_code < 500:
+                print(f"Client error {status_code}: {e}", file=sys.stderr)
+                return None
+            
+            # Retry server errors (5xx)
+            print(f"Attempt {attempt}/{max_retries}: Server error {status_code}",
+                  file=sys.stderr)
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Attempt {attempt}/{max_retries}: Request failed: {e}",
+                  file=sys.stderr)
+        
+        # Exponential backoff before retry
+        if attempt < max_retries:
+            wait_time = 2 ** attempt  # 2, 4, 8 seconds
+            print(f"Retrying in {wait_time}s...", file=sys.stderr)
+            time.sleep(wait_time)
+    
+    print("API call failed after all retries", file=sys.stderr)
+    return None
 
-response = requests.get(url, timeout=5)
-response.raise_for_status()
+def main():
+    url = "https://api.example.com/users"
+    
+    data = call_api_with_retry(url)
+    
+    if data is None:
+        sys.exit(1)
+    
+    # Safely access nested data
+    users = data.get("users", [])
+    
+    for user in users:
+        user_id = user.get("id", "N/A")
+        email = user.get("email", "N/A")
+        print(f"{user_id}: {email}")
 
-data = response.json()
-for user in data["users"]:
-    print(user["id"], user["email"])
+if __name__ == '__main__':
+    main()
 ```
 
-**Best Practices**
-
-* Always use `timeout`
-* Use `raise_for_status()` to fail fast
-* Never assume the API is reliable
+**Best Practices:**
+- Always use `timeout` to prevent hanging
+- Use `raise_for_status()` to fail fast on HTTP errors
+- Implement exponential backoff for retries
+- Don't retry client errors (4xx)
+- Handle JSON parsing errors separately
+- Never assume the API is reliable
 
 ---
 
@@ -27717,103 +30379,396 @@ for user in data["users"]:
 A script lists EC2 instances but misses some when the account has many resources.
 
 **Tasks:**
-
 1. Explain why this happens
 2. Fix it using pagination
+3. Show examples for both EC2 and S3
 
 ---
 
 ### Answer
 
-**Root Cause**
-AWS APIs return paginated results (usually 100–1000 items).
+**Root Cause:**
+AWS APIs return paginated results (usually 100–1000 items per page). Without pagination, you only get the first page.
 
-**Correct Approach**
+**WRONG Approach:**
+```python
+import boto3
 
+# WRONG - Only gets first 1000 instances!
+ec2 = boto3.client("ec2")
+response = ec2.describe_instances()
+
+for reservation in response["Reservations"]:
+    for instance in reservation["Instances"]:
+        print(instance["InstanceId"])
+# Missing instances if you have > 1000!
+```
+
+**CORRECT Approach - EC2:**
+```python
+import boto3
+
+ec2 = boto3.client("ec2", region_name="us-east-1")
+paginator = ec2.get_paginator("describe_instances")
+
+# Automatically handles all pages
+for page in paginator.paginate():
+    for reservation in page["Reservations"]:
+        for instance in reservation["Instances"]:
+            instance_id = instance["InstanceId"]
+            state = instance["State"]["Name"]
+            print(f"{instance_id}: {state}")
+```
+
+**CORRECT Approach - S3:**
+```python
+import boto3
+
+s3 = boto3.client("s3")
+paginator = s3.get_paginator("list_objects_v2")
+
+# List all objects in bucket
+for page in paginator.paginate(Bucket="my-bucket"):
+    for obj in page.get("Contents", []):
+        print(f"{obj['Key']}: {obj['Size']} bytes")
+```
+
+**Advanced: Filtering with Pagination:**
 ```python
 import boto3
 
 ec2 = boto3.client("ec2")
 paginator = ec2.get_paginator("describe_instances")
 
-for page in paginator.paginate():
+# Paginate with filters
+page_iterator = paginator.paginate(
+    Filters=[
+        {"Name": "instance-state-name", "Values": ["running"]},
+        {"Name": "tag:Environment", "Values": ["production"]}
+    ]
+)
+
+for page in page_iterator:
     for reservation in page["Reservations"]:
         for instance in reservation["Instances"]:
             print(instance["InstanceId"])
 ```
 
-**Interview Insight**
-Missing pagination is a common silent production bug.
+**Interview Insight:**
+Missing pagination is a **common silent production bug** that only manifests at scale.
 
 ---
 
-## Question 5: Log Parsing, Process Management & Safety Controls
+## Question 5: Comprehensive Automation Task
 
 ### Problem
 
-A system is slow due to zombie processes and noisy logs. You must safely analyze logs and clean up processes.
-
-**Tasks:**
-
-1. Parse logs using regex
+A system is slow due to zombie processes and noisy logs. You must:
+1. Parse logs using regex to find errors
 2. Identify zombie processes
 3. Implement input validation and dry-run safety
+4. Create both Bash and Python solutions
 
 ---
 
 ### Answer
 
-**Log Parsing with Regex**
+**Part 1: Log Parsing with Regex**
 
 ```bash
+# Bash solution
 grep -E "ERROR|CRITICAL" /var/log/app.log
+
+# With context lines
+grep -E -B 2 -A 2 "ERROR|CRITICAL" /var/log/app.log
+
+# Extract timestamps and error messages
+awk '/ERROR|CRITICAL/ {print $1, $2, $NF}' /var/log/app.log
 ```
 
-**Finding Zombie Processes**
+```python
+# Python solution
+import re
+from collections import Counter
+from datetime import datetime
+
+def parse_errors(logfile):
+    """Parse and analyze errors from log file."""
+    error_pattern = re.compile(
+        r'(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) '
+        r'\[(?P<level>ERROR|CRITICAL)\] '
+        r'(?P<message>.+)'
+    )
+    
+    errors = []
+    
+    with open(logfile, 'r') as f:
+        for line in f:
+            match = error_pattern.search(line)
+            if match:
+                errors.append({
+                    'timestamp': match.group('timestamp'),
+                    'level': match.group('level'),
+                    'message': match.group('message')
+                })
+    
+    # Count error types
+    error_counts = Counter(e['level'] for e in errors)
+    
+    print(f"Total errors: {len(errors)}")
+    for level, count in error_counts.items():
+        print(f"  {level}: {count}")
+    
+    return errors
+
+# Usage
+errors = parse_errors('/var/log/app.log')
+```
+
+**Part 2: Finding Zombie Processes**
 
 ```bash
+# Bash solution
 ps aux | awk '$8=="Z" {print $2, $11}'
+
+# More detailed
+ps -eo pid,ppid,stat,cmd | grep "^[0-9]* [0-9]* Z"
 ```
 
-**Safe Cleanup (Dry Run)**
+```python
+# Python solution
+import subprocess
+
+def find_zombies():
+    """Find zombie processes."""
+    result = subprocess.run(
+        ["ps", "-eo", "pid,ppid,stat,cmd"],
+        capture_output=True,
+        text=True
+    )
+    
+    zombies = []
+    
+    for line in result.stdout.split('\n')[1:]:  # Skip header
+        if not line:
+            continue
+        
+        parts = line.split(None, 3)
+        if len(parts) >= 3 and 'Z' in parts[2]:
+            zombies.append({
+                'pid': int(parts[0]),
+                'ppid': int(parts[1]),
+                'stat': parts[2],
+                'cmd': parts[3] if len(parts) > 3 else ''
+            })
+    
+    return zombies
+
+# Usage
+zombies = find_zombies()
+for z in zombies:
+    print(f"Zombie PID {z['pid']} (parent: {z['ppid']}): {z['cmd']}")
+```
+
+**Part 3: Safe Cleanup with Dry-Run**
 
 ```bash
-DRY_RUN=true
+#!/bin/bash
+set -euo pipefail
 
-kill_zombie() {
-  local pid=$1
-  if [[ "$pid" =~ ^[0-9]+$ ]]; then
-    if [ "$DRY_RUN" = true ]; then
-      echo "DRY RUN: Would kill $pid"
-    else
-      kill -9 "$pid"
-    fi
-  else
-    echo "Invalid PID"
-  fi
+# Configuration
+DRY_RUN="${DRY_RUN:-true}"
+
+# Logging
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
 }
+
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2
+}
+
+# Validate PID
+is_valid_pid() {
+    local pid="$1"
+    [[ "$pid" =~ ^[0-9]+$ ]]
+}
+
+# Kill zombie's parent
+kill_zombie_parent() {
+    local zombie_pid="$1"
+    
+    # Validate input
+    if ! is_valid_pid "$zombie_pid"; then
+        error "Invalid PID: $zombie_pid"
+        return 1
+    fi
+    
+    # Get parent PID
+    local ppid
+    ppid=$(ps -o ppid= -p "$zombie_pid" 2>/dev/null | tr -d ' ')
+    
+    if [[ -z $ppid ]]; then
+        error "Could not find parent for PID $zombie_pid"
+        return 1
+    fi
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: Would kill parent PID $ppid of zombie $zombie_pid"
+    else
+        log "Killing parent PID $ppid of zombie $zombie_pid"
+        if kill -9 "$ppid"; then
+            log "Successfully killed PID $ppid"
+        else
+            error "Failed to kill PID $ppid"
+            return 1
+        fi
+    fi
+}
+
+# Main
+main() {
+    log "Scanning for zombie processes..."
+    
+    local zombie_count=0
+    
+    # Find zombies
+    while read -r pid stat cmd; do
+        if [[ "$stat" == *"Z"* ]]; then
+            log "Found zombie: PID $pid - $cmd"
+            kill_zombie_parent "$pid"
+            ((zombie_count++))
+        fi
+    done < <(ps -eo pid,stat,cmd | tail -n +2)
+    
+    if [[ $zombie_count -eq 0 ]]; then
+        log "No zombie processes found"
+    else
+        log "Processed $zombie_count zombie(s)"
+    fi
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN MODE - No changes made"
+        log "Run with DRY_RUN=false to apply changes"
+    fi
+}
+
+main "$@"
 ```
 
-**Why This Matters**
+```python
+#!/usr/bin/env python3
+import os
+import signal
+import sys
+import subprocess
+from typing import List, Dict
 
-* Regex ensures precise log filtering
-* Zombie cleanup prevents resource leaks
-* Dry-run prevents accidental outages
+# Configuration
+DRY_RUN = os.environ.get('DRY_RUN', 'true').lower() == 'true'
+
+def find_zombies() -> List[Dict]:
+    """Find all zombie processes."""
+    result = subprocess.run(
+        ['ps', '-eo', 'pid,ppid,stat,cmd'],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    
+    zombies = []
+    
+    for line in result.stdout.split('\n')[1:]:
+        if not line:
+            continue
+        
+        parts = line.split(None, 3)
+        if len(parts) >= 3 and 'Z' in parts[2]:
+            zombies.append({
+                'pid': int(parts[0]),
+                'ppid': int(parts[1]),
+                'stat': parts[2],
+                'cmd': parts[3] if len(parts) > 3 else ''
+            })
+    
+    return zombies
+
+def kill_process(pid: int, dry_run: bool = True) -> bool:
+    """Kill process with validation."""
+    # Validate PID
+    if not isinstance(pid, int) or pid <= 0:
+        print(f"ERROR: Invalid PID: {pid}", file=sys.stderr)
+        return False
+    
+    # Check if process exists
+    try:
+        os.kill(pid, 0)  # Signal 0 checks existence
+    except OSError:
+        print(f"ERROR: Process {pid} does not exist", file=sys.stderr)
+        return False
+    
+    if dry_run:
+        print(f"DRY RUN: Would kill PID {pid}")
+        return True
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            print(f"Killed PID {pid}")
+            return True
+        except OSError as e:
+            print(f"ERROR: Failed to kill PID {pid}: {e}", file=sys.stderr)
+            return False
+
+def main():
+    print("Scanning for zombie processes...")
+    print(f"Mode: {'DRY RUN' if DRY_RUN else 'LIVE'}")
+    
+    zombies = find_zombies()
+    
+    if not zombies:
+        print("No zombie processes found")
+        return 0
+    
+    print(f"Found {len(zombies)} zombie(s):")
+    
+    for zombie in zombies:
+        print(f"  PID {zombie['pid']} (parent: {zombie['ppid']}): {zombie['cmd']}")
+        
+        # Kill parent process
+        kill_process(zombie['ppid'], dry_run=DRY_RUN)
+    
+    if DRY_RUN:
+        print("\nDRY RUN MODE - No changes made")
+        print("Run with DRY_RUN=false to apply changes")
+    
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())
+```
+
+**Why This Matters:**
+- Regex ensures precise log filtering
+- Zombie cleanup prevents resource leaks
+- Dry-run prevents accidental outages
+- Input validation prevents dangerous operations
+- Proper error handling enables production use
 
 ---
 
 ## Contest Evaluation Criteria
 
-* Safe scripting practices
-* Proper error handling
-* API and cloud automation correctness
-* Defensive programming mindset
-* Production-grade logic over shortcuts
+Scripts are evaluated on:
+1. **Safety**: Error handling, input validation, dry-run support
+2. **Correctness**: Proper use of APIs, pagination, regex patterns
+3. **Production-readiness**: Logging, exit codes, idempotency
+4. **Code quality**: Readability, maintainability, documentation
+5. **Defensive programming**: Handles edge cases, fails gracefully
 
-This challenge mirrors **real on-call scripting and automation incidents**.
-
+**This challenge mirrors real on-call scripting and automation incidents.**
 
 ---
+```
 
 Module 10:
 Title: Databases & Data Management
