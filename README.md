@@ -1617,7 +1617,7 @@ Order: 5
 
 Class 2.5.1:
 	Title: Linux Challenge
-	Description: A contest to test your command line and troubleshooting
+	Description: test your command line and troubleshooting
 Content Type: text
 Duration: 300 
 Order: 1
@@ -8798,7 +8798,7 @@ Duration: 300
 Order: 1
 Text Content :
 # AWS Fundamentals – Challenge  
-**Contest Format | 5 Questions**
+**Test Format | 5 Questions**
 
 These questions are designed to test **real-world AWS troubleshooting and architecture judgment**, not just service definitions.
 
@@ -15353,7 +15353,7 @@ Duration: 300
 Order: 1
 		Text Content :
 # Kubernetes Fundamentals – Challenge  
-**Contest Format | 5 Questions**
+**Test Format | 5 Questions**
 
 These scenarios test your ability to **debug Kubernetes under pressure**, not just recall definitions.
 
@@ -20855,7 +20855,7 @@ Order: 1
 		Text Content :
 
 # Infrastructure Automation – Terraform & Ansible Challenge
-**Contest Format | 5 Questions**
+**Test Format | 5 Questions**
 
 These questions focus on **real-world IaC failures, collaboration issues, and recovery patterns** seen in production.
 
@@ -21746,7 +21746,6 @@ module "rds" {
 Topic: 6.5
 Title: IaC Challenge
 Order: 5
-
 
 Class 6.5.1:
 	Title: IaC Challenge
@@ -31835,7 +31834,7 @@ Order: 1
 Text Content:
 
 # Scripting & Automation – Bash and Python Challenge
-**Contest Format | 5 Questions**
+**Test Format | 5 Questions**
 
 This challenge evaluates **production-grade scripting**, not toy examples. Focus is on safety, correctness, and real operational usage.
 
@@ -32521,6 +32520,20 @@ Scripts are evaluated on:
 **This challenge mirrors real on-call scripting and automation incidents.**
 
 ---
+
+Class 9.3.2:
+	Title: Shell and Linux Scripting Challenge
+	Description: Questions and Their respective answers
+Content Type: contest
+Duration: 7200
+Order: 1
+Context URL : https://www.scaler.com/hire/test/13685680b0/#/problems
+
+Contest Questions : 15
+Contest Syllabus:
+- Linux
+- Shell Scripting
+
 ```
 
 Module 10:
